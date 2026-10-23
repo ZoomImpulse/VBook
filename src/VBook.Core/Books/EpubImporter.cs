@@ -51,7 +51,8 @@ public sealed class EpubImporter : IBookImporter
                 Id = (string?)item.Attribute("id"),
                 Href = (string?)item.Attribute("href"),
                 MediaType = (string?)item.Attribute("media-type"),
-                Title = (string?)item.Attribute("title")
+                Title = (string?)item.Attribute("title"),
+                Properties = (string?)item.Attribute("properties")
             })
             .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Href))
             .ToArray();
@@ -61,10 +62,10 @@ public sealed class EpubImporter : IBookImporter
             throw new InvalidDataException("The EPUB package has no readable manifest.");
         }
 
-        var manifest = new Dictionary<string, (string Href, string? MediaType, string? Title)>(StringComparer.Ordinal);
+        var manifest = new Dictionary<string, (string Href, string? MediaType, string? Title, string? Properties)>(StringComparer.Ordinal);
         foreach (var item in manifestItems)
         {
-            if (!manifest.TryAdd(item.Id!, (item.Href!, item.MediaType, item.Title)))
+            if (!manifest.TryAdd(item.Id!, (item.Href!, item.MediaType, item.Title, item.Properties)))
             {
                 throw new InvalidDataException($"The EPUB manifest contains duplicate item ID '{item.Id}'.");
             }
@@ -83,7 +84,10 @@ public sealed class EpubImporter : IBookImporter
         }
 
         var packageDirectory = GetDirectory(packagePath);
+        var guideTypes = ReadGuide(package, packageDirectory);
+        var tocTitles = ReadTocTitles(archive, package, manifest, packageDirectory);
         var chapters = new List<ImportedChapter>();
+        var skipped = new List<SkippedSection>();
         foreach (var id in spine)
         {
             if (!manifest.TryGetValue(id!, out var item))
@@ -107,8 +111,19 @@ public sealed class EpubImporter : IBookImporter
             var heading = document.Descendants()
                 .FirstOrDefault(element => element.Name.LocalName is "h1" or "h2" or "h3")
                 ?.Value;
-            var chapterTitle = FirstNonEmpty(heading, item.Title, $"Chapter {chapters.Count + 1}");
-            chapters.Add(new ImportedChapter(id!, chapterTitle, text));
+            tocTitles.TryGetValue(contentPath, out var tocTitle);
+            guideTypes.TryGetValue(contentPath, out var guideType);
+            var chapterTitle = FirstNonEmpty(tocTitle, heading, item.Title, $"Chapter {chapters.Count + 1}");
+
+            var classification = SectionClassifier.Classify(
+                document, FirstNonEmpty(tocTitle, heading, item.Title, string.Empty), item.Properties, guideType, text);
+            if (classification.Role == SectionRole.Skip)
+            {
+                skipped.Add(new SkippedSection(id!, chapterTitle, classification.Reason ?? "not audiobook content"));
+                continue;
+            }
+
+            chapters.Add(new ImportedChapter(id!, chapterTitle, text, classification.Role));
         }
 
         if (chapters.Count == 0)
@@ -116,7 +131,83 @@ public sealed class EpubImporter : IBookImporter
             throw new InvalidDataException("The EPUB contains no readable chapter text.");
         }
 
-        return new ImportedBook(FirstNonEmpty(title, "Untitled book"), chapters);
+        return new ImportedBook(FirstNonEmpty(title, "Untitled book"), chapters, skipped);
+    }
+
+    private static Dictionary<string, string> ReadGuide(XDocument package, string packageDirectory)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var references = package.Root?.Element(OpfNamespace + "guide")?.Elements(OpfNamespace + "reference");
+        foreach (var reference in references ?? Enumerable.Empty<XElement>())
+        {
+            var type = (string?)reference.Attribute("type");
+            var href = (string?)reference.Attribute("href");
+            if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(href))
+            {
+                continue;
+            }
+
+            try
+            {
+                result.TryAdd(ResolveArchivePath(packageDirectory, href), type);
+            }
+            catch (InvalidDataException)
+            {
+            }
+        }
+
+        return result;
+    }
+
+    // Titles come from the EPUB's own table of contents; the first entry per file wins.
+    private static Dictionary<string, string> ReadTocTitles(
+        ZipArchive archive,
+        XDocument package,
+        Dictionary<string, (string Href, string? MediaType, string? Title, string? Properties)> manifest,
+        string packageDirectory)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var tocId = (string?)package.Root?.Element(OpfNamespace + "spine")?.Attribute("toc");
+        foreach (var (id, item) in manifest)
+        {
+            var isNav = item.Properties?.Split(' ').Contains("nav") == true;
+            var isNcx = id == tocId || item.MediaType == "application/x-dtbncx+xml";
+            if (!isNav && !isNcx)
+            {
+                continue;
+            }
+
+            try
+            {
+                var path = ResolveArchivePath(packageDirectory, item.Href);
+                var document = ReadXml(archive, path);
+                var directory = GetDirectory(path);
+                var entries = isNav
+                    ? document.Descendants().Where(e => e.Name.LocalName == "a")
+                        .Select(a => (Href: (string?)a.Attribute("href"), Title: a.Value))
+                    : document.Descendants().Where(e => e.Name.LocalName == "navPoint")
+                        .Select(point => (
+                            Href: (string?)point.Elements().FirstOrDefault(e => e.Name.LocalName == "content")?.Attribute("src"),
+                            Title: point.Elements().FirstOrDefault(e => e.Name.LocalName == "navLabel")?.Value ?? string.Empty));
+
+                foreach (var (href, label) in entries)
+                {
+                    var cleaned = string.Join(' ', label.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+                    if (string.IsNullOrWhiteSpace(href) || cleaned.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    result.TryAdd(ResolveArchivePath(directory, href), cleaned);
+                }
+            }
+            catch (InvalidDataException)
+            {
+                // A broken table of contents must not block the import.
+            }
+        }
+
+        return result;
     }
 
     private static XDocument ReadXml(ZipArchive archive, string path)
@@ -163,7 +254,12 @@ public sealed class EpubImporter : IBookImporter
 
         var builder = new StringBuilder();
         AppendNodeText(body, builder);
-        var normalizedLines = builder.ToString()
+        return NormalizeText(builder.ToString());
+    }
+
+    private static string NormalizeText(string text)
+    {
+        var normalizedLines = text
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n')
@@ -199,6 +295,37 @@ public sealed class EpubImporter : IBookImporter
             return;
         }
 
+        if (element.Name.LocalName == "pre")
+        {
+            if (!string.IsNullOrWhiteSpace(element.Value))
+            {
+                AppendBlockBoundary(builder);
+                builder.Append("Code block omitted.");
+                AppendBlockBoundary(builder);
+            }
+
+            return;
+        }
+
+        if (element.Name.LocalName == "table")
+        {
+            var spokenTable = FormatTable(element);
+            if (spokenTable.Length > 0)
+            {
+                AppendBlockBoundary(builder);
+                builder.Append(spokenTable);
+                AppendBlockBoundary(builder);
+            }
+
+            return;
+        }
+
+        if (element.Name.LocalName is "ol" or "ul")
+        {
+            AppendList(element, builder);
+            return;
+        }
+
         foreach (var node in element.Nodes())
         {
             if (node is XText text)
@@ -228,6 +355,91 @@ public sealed class EpubImporter : IBookImporter
             }
         }
     }
+
+    private static void AppendList(XElement list, StringBuilder builder)
+    {
+        var ordered = list.Name.LocalName == "ol";
+        var index = 0;
+        foreach (var item in list.Elements().Where(child => child.Name.LocalName == "li"))
+        {
+            index++;
+            var itemContent = new StringBuilder();
+            foreach (var node in item.Nodes())
+            {
+                if (node is XText text)
+                {
+                    itemContent.Append(text.Value);
+                }
+                else if (node is XElement child)
+                {
+                    AppendNodeText(child, itemContent);
+                }
+            }
+
+            var itemText = NormalizeText(itemContent.ToString());
+            if (itemText.Length == 0)
+            {
+                continue;
+            }
+
+            AppendBlockBoundary(builder);
+            builder.Append(ordered ? $"{index}. " : $"Item {index}: ");
+            builder.Append(itemText);
+            AppendBlockBoundary(builder);
+        }
+    }
+
+    private static string FormatTable(XElement table)
+    {
+        var rows = table.Descendants()
+            .Where(element => element.Name.LocalName == "tr"
+                && element.Ancestors().FirstOrDefault(parent => parent.Name.LocalName == "table") == table)
+            .Select(row => row.Elements()
+                .Where(cell => cell.Name.LocalName is "th" or "td")
+                .Select(cell =>
+                {
+                    var cellText = new StringBuilder();
+                    AppendNodeText(cell, cellText);
+                    return NormalizeText(cellText.ToString());
+                })
+                .ToArray())
+            .Where(cells => cells.Length > 0)
+            .ToArray();
+        if (rows.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var headers = rows[0];
+        var hasHeaders = table.Descendants()
+            .Any(element => element.Name.LocalName == "th");
+        var columnCount = rows.Max(row => row.Length);
+        var builder = new StringBuilder($"Table with {rows.Length} rows and {columnCount} columns.");
+        var firstDataRow = 0;
+        if (hasHeaders)
+        {
+            builder.Append(" Column headings: ");
+            builder.Append(string.Join("; ", headers.Select((header, index) =>
+                $"Column {index + 1}: {NonEmptyCell(header)}")));
+            builder.Append('.');
+            firstDataRow = 1;
+        }
+
+        for (var rowIndex = firstDataRow; rowIndex < rows.Length; rowIndex++)
+        {
+            builder.Append($" Row {rowIndex - firstDataRow + 1}: ");
+            builder.Append(string.Join("; ", rows[rowIndex].Select((cell, cellIndex) =>
+                hasHeaders && cellIndex < headers.Length
+                    ? $"{NonEmptyCell(headers[cellIndex])}: {NonEmptyCell(cell)}"
+                    : $"Column {cellIndex + 1}: {NonEmptyCell(cell)}")));
+            builder.Append('.');
+        }
+
+        return builder.ToString();
+    }
+
+    private static string NonEmptyCell(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "empty" : value;
 
     private static void AppendBlockBoundary(StringBuilder builder)
     {

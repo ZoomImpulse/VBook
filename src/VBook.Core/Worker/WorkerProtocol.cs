@@ -18,7 +18,8 @@ public sealed record AnalyzeChapterRequest(
     Guid RequestId,
     string ChapterId,
     string Text,
-    IReadOnlyList<Character> KnownCharacters) : WorkerRequest(RequestId);
+    IReadOnlyList<Character> KnownCharacters,
+    NarrationMode Mode = NarrationMode.MultiVoice) : WorkerRequest(RequestId);
 
 /// <summary>Asks an out-of-process worker to stop the request with the given ID.</summary>
 public sealed record CancelRequest(Guid RequestId) : WorkerRequest(RequestId);

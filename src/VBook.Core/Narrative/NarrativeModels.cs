@@ -3,6 +3,16 @@ using System.Text;
 
 namespace VBook.Core.Narrative;
 
+/// <summary>
+/// How a book is voiced. Fiction with dialogue benefits from a cast; most other
+/// genres (non-fiction, textbooks, memoir, essays, reference) are read by one narrator.
+/// </summary>
+public enum NarrationMode
+{
+    SingleNarrator,
+    MultiVoice,
+}
+
 public enum SegmentKind
 {
     Narration,

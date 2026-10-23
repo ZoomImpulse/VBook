@@ -32,6 +32,9 @@ public sealed partial class MainWindowViewModel
     [ObservableProperty]
     private bool _isAnalysisStale;
 
+    [ObservableProperty]
+    private bool _useMultipleVoices;
+
     public ObservableCollection<SegmentItem> Segments { get; } = [];
 
     public ObservableCollection<CharacterItem> Characters { get; } = [];
@@ -61,7 +64,11 @@ public sealed partial class MainWindowViewModel
                 AnalysisStatus = report.Message;
             });
             var analysis = await _narrativeWorker.AnalyzeChapterAsync(
-                new AnalysisRequest(chapter.Id, text, known),
+                new AnalysisRequest(
+                    chapter.Id,
+                    text,
+                    known,
+                    UseMultipleVoices ? NarrationMode.MultiVoice : NarrationMode.SingleNarrator),
                 progress,
                 cancellationToken);
             await _narrativeStore.SaveAnalysisAsync(projectId, analysis, cancellationToken);

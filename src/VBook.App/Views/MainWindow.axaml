@@ -99,6 +99,10 @@
                                     Classes="secondary"
                                     VerticalAlignment="Center"
                                     Text="{Binding AnalyzerName, StringFormat='Analyzer: {0}'}" />
+                                <CheckBox
+                                    Content="Multiple voices (dialogue cast)"
+                                    IsChecked="{Binding UseMultipleVoices}"
+                                    ToolTip.Tip="Off: one narrator reads the whole book. Best for non-fiction, textbooks, memoir and essays. On: dialogue is attributed to characters." />
                             </StackPanel>
                             <StackPanel Grid.Row="1" Spacing="4" Margin="0,12">
                                 <ProgressBar

@@ -10,8 +10,17 @@ their chapters. Original EPUB files are read in place and are never modified.
   [ARCHITECTURE.md](./ARCHITECTURE.md).
 - Import EPUBs, browse chapters, edit extracted text, and save projects locally
   in SQLite. The latest project reopens when the application starts.
-- Local LLM/TTS integrations, SQLite narrative memory, background generation,
-  and audio export are staged work and are not represented as available yet.
+- EPUB structure is prepared for speech: headings remain separate, ordered and
+  unordered list items are announced, tables become spoken row summaries, code
+  blocks are replaced with an omission notice, and explicit line breaks are
+  retained for verse. The original EPUB is never changed.
+- The **Narrative** tab analyzes a chapter into narration and attributed dialogue,
+  lists the characters, and stores the result in SQLite. It currently uses a
+  **mock heuristic analyzer** (quotation marks plus "said Mary" patterns), not a
+  language model, and the UI labels it as such. Editing a chapter afterwards marks
+  the analysis stale until it is re-run.
+- Real local LLM/TTS integrations, background generation, and audio export are
+  staged work and are not available yet.
 - No cloud APIs or telemetry are part of the design.
 
 ## Development prerequisites

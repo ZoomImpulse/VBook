@@ -83,6 +83,19 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SingleNarratorMode_ProducesNarrationOnlyWithoutCharacters()
+    {
+        var (viewModel, _) = await CreateImportedViewModelAsync(new MockLlmProvider());
+        viewModel.UseMultipleVoices = false;
+
+        await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.HasAnalysis);
+        Assert.Empty(viewModel.Characters);
+        Assert.All(viewModel.Segments, segment => Assert.True(segment.IsNarration));
+    }
+
+    [Fact]
     public async Task WorkerFailure_IsReportedInStatus()
     {
         var (viewModel, _) = await CreateImportedViewModelAsync(new FailingProvider());
@@ -101,6 +114,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         await viewModel.InitializeAsync();
         await viewModel.ImportEpubCommand.ExecuteAsync(null);
         Assert.NotNull(viewModel.SelectedChapter);
+        viewModel.UseMultipleVoices = true;
         return (viewModel, store);
     }
 

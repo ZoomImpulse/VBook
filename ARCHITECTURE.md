@@ -28,7 +28,10 @@ book. The UI remains useful without any AI models.
 1. The user selects an EPUB in the desktop application.
 2. `VBook.Core` reads the EPUB container, package manifest, and spine directly
    from the ZIP archive and emits chapters in spine order.
-3. The UI displays extracted text without changing the original. Project
+   Extracted headings and list items retain reading order, tables are rendered
+   as spoken row summaries, code blocks become omission notices, and explicit
+   line breaks are preserved.
+3. The UI displays speech-prepared text without changing the original EPUB. Project
    metadata and chapter text are saved transactionally to a local SQLite
    project catalog; recent projects can be reopened after restarting.
 4. Future chapter analysis packages only a bounded scene and relevant SQLite
@@ -44,6 +47,9 @@ book. The UI remains useful without any AI models.
   controls are applied.
 - Exact source text remains authoritative. Direction output must be validated
   for complete, ordered coverage before audio generation.
+- EPUB block structure is converted to speech-friendly chapter text during
+  import. Single-narrator segmentation keeps paragraph and explicit line
+  boundaries, including verse, and splits long lines at sentence boundaries.
 - Context budgets are enforced before local model requests.
 - Long-running jobs accept cancellation and persist completed segment results.
 - No book content, model prompts, or audio is uploaded or sent to telemetry.

@@ -10,7 +10,8 @@ public sealed record ProviderCapabilities(string Name, bool IsMock, int MaxConte
 public sealed record AnalysisRequest(
     string ChapterId,
     string Text,
-    IReadOnlyList<Character> KnownCharacters);
+    IReadOnlyList<Character> KnownCharacters,
+    NarrationMode Mode = NarrationMode.MultiVoice);
 
 public sealed record AnalysisProgress(double Fraction, string Message);
 

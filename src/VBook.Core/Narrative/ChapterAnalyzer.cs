@@ -22,6 +22,14 @@ public sealed class ChapterAnalyzer
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.Mode == NarrationMode.SingleNarrator)
+        {
+            var paragraphs = SingleNarratorSegmenter.Segment(request.Text);
+            AnalysisValidator.EnsureValid(request.Text, [], paragraphs);
+            progress?.Report(new AnalysisProgress(1, "Analysis complete."));
+            return new ChapterAnalysis(request.ChapterId, TextFingerprint.Compute(request.Text), [], paragraphs);
+        }
+
         var budget = _provider.Capabilities.MaxContextCharacters;
         if (budget < 2)
         {

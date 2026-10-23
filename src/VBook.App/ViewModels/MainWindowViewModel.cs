@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VBook.App.Services;
 using VBook.Core.Books;
+using VBook.Core.Narrative;
 using VBook.Core.Projects;
 using VBook.Core.Worker;
 
@@ -242,6 +243,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
 
         SelectedChapter = Chapters.FirstOrDefault();
+        UseMultipleVoices = NarrationModeDetector.Suggest(string.Join("\n\n", chapters.Select(c => c.Text)))
+            == NarrationMode.MultiVoice;
     }
 
     private async Task LoadProjectAsync(Guid projectId, CancellationToken cancellationToken)
