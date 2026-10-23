@@ -96,6 +96,32 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DeleteProject_RequiresConfirmationAndClearsOpenWorkspace()
+    {
+        var (viewModel, store) = await CreateImportedViewModelAsync(new MockLlmProvider());
+        var projectId = Assert.Single(viewModel.RecentProjects).Id;
+        var sourcePath = Path.Combine(_directory, "book.epub");
+
+        viewModel.DeleteRecentProjectCommand.Execute(null);
+
+        Assert.True(viewModel.IsDeleteConfirmationVisible);
+        Assert.NotNull(viewModel.Book);
+        viewModel.CancelDeleteProjectCommand.Execute(null);
+        Assert.False(viewModel.IsDeleteConfirmationVisible);
+
+        viewModel.DeleteRecentProjectCommand.Execute(null);
+        await viewModel.ConfirmDeleteProjectCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsDeleteConfirmationVisible);
+        Assert.Null(viewModel.Book);
+        Assert.Empty(viewModel.Chapters);
+        Assert.Empty(viewModel.RecentProjects);
+        Assert.Null(await store.LoadAsync(projectId));
+        Assert.True(File.Exists(sourcePath));
+        Assert.Contains("Deleted project", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task WorkerFailure_IsReportedInStatus()
     {
         var (viewModel, _) = await CreateImportedViewModelAsync(new FailingProvider());

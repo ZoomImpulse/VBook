@@ -41,7 +41,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(OpenRecentProjectCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteRecentProjectCommand))]
     private RecentProject? _selectedRecentProject;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ConfirmDeleteProjectCommand))]
+    private RecentProject? _projectPendingDelete;
 
     [ObservableProperty]
     private string _statusMessage = "Import an EPUB to begin.";
@@ -49,6 +54,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ImportEpubCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenRecentProjectCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteRecentProjectCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ConfirmDeleteProjectCommand))]
     [NotifyCanExecuteChangedFor(nameof(SaveProjectCommand))]
     [NotifyCanExecuteChangedFor(nameof(AnalyzeChapterCommand))]
     private bool _isBusy;
@@ -71,6 +78,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public ObservableCollection<RecentProject> RecentProjects { get; } = [];
 
+    public bool IsDeleteConfirmationVisible => ProjectPendingDelete is not null;
+
     public string WindowTitle => Book is null ? AppTitle : $"{Book.Title} — {AppTitle}";
 
     public bool HasChapter => SelectedChapter is not null;
@@ -78,6 +87,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public string ChapterHeading => SelectedChapter?.Title ?? "No chapter selected";
 
     partial void OnBookChanged(ImportedBook? value) => OnPropertyChanged(nameof(WindowTitle));
+
+    partial void OnProjectPendingDeleteChanged(RecentProject? value) =>
+        OnPropertyChanged(nameof(IsDeleteConfirmationVisible));
 
     partial void OnSelectedChapterChanged(ImportedChapter? value)
     {
@@ -207,6 +219,54 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
     }
 
+    [RelayCommand(CanExecute = nameof(CanDeleteRecentProject))]
+    private void DeleteRecentProject() => ProjectPendingDelete = SelectedRecentProject;
+
+    [RelayCommand]
+    private void CancelDeleteProject() => ProjectPendingDelete = null;
+
+    [RelayCommand(CanExecute = nameof(CanConfirmDeleteProject))]
+    private async Task ConfirmDeleteProjectAsync(CancellationToken cancellationToken)
+    {
+        if (ProjectPendingDelete is not { } project)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var isOpenProject = _projectId == project.Id;
+            if (isOpenProject)
+            {
+                await FlushPendingSaveAsync();
+            }
+
+            if (!await _projectStore.DeleteAsync(project.Id, cancellationToken))
+            {
+                StatusMessage = $"Project '{project.Title}' was already deleted or could not be found.";
+                return;
+            }
+
+            if (isOpenProject)
+            {
+                ClearOpenProject();
+            }
+
+            ProjectPendingDelete = null;
+            await RefreshRecentProjectsAsync(cancellationToken);
+            StatusMessage = $"Deleted project '{project.Title}'. The source EPUB was not deleted.";
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Could not delete project '{project.Title}': {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveProjectAsync(CancellationToken cancellationToken)
     {
@@ -227,6 +287,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private bool CanOpenRecent() => !IsBusy && SelectedRecentProject is not null;
 
+    private bool CanDeleteRecentProject() => !IsBusy && SelectedRecentProject is not null;
+
+    private bool CanConfirmDeleteProject() => !IsBusy && ProjectPendingDelete is not null;
+
     private bool CanSave() => !IsBusy && Book is not null;
 
     private string GetChapterText(ImportedChapter chapter) =>
@@ -245,6 +309,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         SelectedChapter = Chapters.FirstOrDefault();
         UseMultipleVoices = NarrationModeDetector.Suggest(string.Join("\n\n", chapters.Select(c => c.Text)))
             == NarrationMode.MultiVoice;
+    }
+
+    private void ClearOpenProject()
+    {
+        CancelPendingAutosave();
+        _projectId = null;
+        _projectCreatedAt = default;
+        _sourcePath = string.Empty;
+        _editedTextByChapter.Clear();
+        Book = null;
+        Chapters.Clear();
+        SelectedChapter = null;
+        ChapterText = string.Empty;
+        OnPropertyChanged(nameof(HasChapter));
+        OnPropertyChanged(nameof(ChapterHeading));
     }
 
     private async Task LoadProjectAsync(Guid projectId, CancellationToken cancellationToken)

@@ -25,6 +25,23 @@
                 TextTrimming="CharacterEllipsis" />
         </Border>
 
+        <Border
+            Classes="panel"
+            DockPanel.Dock="Top"
+            Padding="16,10"
+            IsVisible="{Binding IsDeleteConfirmationVisible}">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock
+                    VerticalAlignment="Center"
+                    Text="{Binding ProjectPendingDelete.Title, StringFormat='Permanently delete {0} from this library? The EPUB file will not be deleted.'}"
+                    TextWrapping="Wrap" />
+                <Button
+                    Content="Delete project"
+                    Command="{Binding ConfirmDeleteProjectCommand}" />
+                <Button Content="Cancel" Command="{Binding CancelDeleteProjectCommand}" />
+            </StackPanel>
+        </Border>
+
         <Grid
             DockPanel.Dock="Top"
             ColumnDefinitions="*,Auto"
@@ -48,6 +65,7 @@
                     </ComboBox.ItemTemplate>
                 </ComboBox>
                 <Button Content="Open" Command="{Binding OpenRecentProjectCommand}" />
+                <Button Content="Delete" Command="{Binding DeleteRecentProjectCommand}" ToolTip.Tip="Delete selected project" />
                 <Button Content="Save" Command="{Binding SaveProjectCommand}" HotKey="Ctrl+S" ToolTip.Tip="Save project (Ctrl+S)" />
                 <Button Content="Import EPUB…" Classes="accent" Command="{Binding ImportEpubCommand}" HotKey="Ctrl+O" ToolTip.Tip="Import EPUB (Ctrl+O)" />
             </StackPanel>

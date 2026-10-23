@@ -90,6 +90,41 @@ public sealed class SqliteProjectStoreTests
         }
     }
 
+    [Fact]
+    public async Task Delete_RemovesProjectAndItsDependentData()
+    {
+        var databasePath = CreateDatabasePath();
+        try
+        {
+            var store = new SqliteProjectStore(databasePath);
+            await store.InitializeAsync();
+            var projectId = Guid.NewGuid();
+            await store.SaveAsync(new AudiobookProject(
+                projectId,
+                "Delete me",
+                "book.epub",
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                [new ImportedChapter("chapter-1", "Opening", "Text.")]));
+            await store.SaveAnalysisAsync(projectId, new VBook.Core.Narrative.ChapterAnalysis(
+                "chapter-1",
+                VBook.Core.Narrative.TextFingerprint.Compute("Text."),
+                [],
+                [new VBook.Core.Narrative.NarrativeSegment(0, VBook.Core.Narrative.SegmentKind.Narration, null, 0, 5)]));
+
+            Assert.True(await store.DeleteAsync(projectId));
+            Assert.False(await store.DeleteAsync(projectId));
+            Assert.Null(await store.LoadAsync(projectId));
+            Assert.Empty(await store.GetRecentAsync());
+            Assert.Empty(await store.LoadCharactersAsync(projectId));
+            Assert.Null(await store.LoadAnalysisAsync(projectId, "chapter-1"));
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
     private static string CreateDatabasePath()
     {
         return Path.Combine(Path.GetTempPath(), $"vbook-test-{Guid.NewGuid():N}", "projects.sqlite3");

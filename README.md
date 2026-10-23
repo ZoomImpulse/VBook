@@ -10,6 +10,9 @@ their chapters. Original EPUB files are read in place and are never modified.
   [ARCHITECTURE.md](./ARCHITECTURE.md).
 - Import EPUBs, browse chapters, edit extracted text, and save projects locally
   in SQLite. The latest project reopens when the application starts.
+- Delete a project from the recent-project list with an explicit confirmation.
+  This removes the local project data from the library but never deletes the
+  original EPUB file.
 - EPUB structure is prepared for speech: headings remain separate, ordered and
   unordered list items are announced, tables become spoken row summaries, code
   blocks are replaced with an omission notice, and explicit line breaks are
