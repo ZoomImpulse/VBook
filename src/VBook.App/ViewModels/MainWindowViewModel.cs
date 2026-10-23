@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using VBook.App.Services;
 using VBook.Core.Books;
 using VBook.Core.Projects;
+using VBook.Core.Worker;
 
 namespace VBook.App.ViewModels;
 
@@ -14,6 +15,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private readonly IBookImporter _bookImporter;
     private readonly IProjectStore _projectStore;
     private readonly IFilePickerService _filePicker;
+    private readonly INarrativeWorker _narrativeWorker;
+    private readonly INarrativeStore _narrativeStore;
     private readonly Dictionary<string, string> _editedTextByChapter = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private CancellationTokenSource? _autosaveCancellation;
@@ -25,9 +28,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SaveProjectCommand))]
+    [NotifyCanExecuteChangedFor(nameof(AnalyzeChapterCommand))]
     private ImportedBook? _book;
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(AnalyzeChapterCommand))]
     private ImportedChapter? _selectedChapter;
 
     [ObservableProperty]
@@ -44,16 +49,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     [NotifyCanExecuteChangedFor(nameof(ImportEpubCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenRecentProjectCommand))]
     [NotifyCanExecuteChangedFor(nameof(SaveProjectCommand))]
+    [NotifyCanExecuteChangedFor(nameof(AnalyzeChapterCommand))]
     private bool _isBusy;
 
     public MainWindowViewModel(
         IBookImporter bookImporter,
         IProjectStore projectStore,
-        IFilePickerService filePicker)
+        IFilePickerService filePicker,
+        INarrativeWorker narrativeWorker,
+        INarrativeStore narrativeStore)
     {
         _bookImporter = bookImporter;
         _projectStore = projectStore;
         _filePicker = filePicker;
+        _narrativeWorker = narrativeWorker;
+        _narrativeStore = narrativeStore;
     }
 
     public ObservableCollection<ImportedChapter> Chapters { get; } = [];
@@ -81,6 +91,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         {
             _loadingChapterText = false;
         }
+
+        _ = LoadAnalysisForSelectionAsync();
     }
 
     partial void OnChapterTextChanged(string value)
@@ -91,6 +103,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
 
         _editedTextByChapter[SelectedChapter.Id] = value;
+        RefreshAnalysisStaleness(SelectedChapter);
         ScheduleAutosave();
     }
 

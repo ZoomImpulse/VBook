@@ -25,6 +25,9 @@
         <Style Selector="TextBlock.secondary">
             <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}" />
         </Style>
+        <Style Selector="TextBlock.narration">
+            <Setter Property="FontStyle" Value="Italic" />
+        </Style>
         <Style Selector="Border.panel">
             <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}" />
         </Style>

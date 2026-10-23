@@ -71,15 +71,86 @@
             </Border>
             <GridSplitter Grid.Column="1" Width="4" ResizeDirection="Columns" />
             <DockPanel Grid.Column="2" Margin="28">
-                <TextBlock Classes="heading" DockPanel.Dock="Top" Margin="0,0,0,16" Text="{Binding ChapterHeading}" />
-                <TextBox
-                    AcceptsReturn="True"
-                    AutomationProperties.Name="Chapter text"
-                    IsEnabled="{Binding HasChapter}"
-                    PlaceholderText="Imported chapter text will appear here."
-                    Text="{Binding ChapterText}"
-                    TextWrapping="Wrap"
-                    VerticalContentAlignment="Top" />
+                <TextBlock Classes="heading" DockPanel.Dock="Top" Margin="0,0,0,12" Text="{Binding ChapterHeading}" />
+                <TabControl>
+                    <TabItem Header="Text">
+                        <TextBox
+                            Margin="0,12,0,0"
+                            AcceptsReturn="True"
+                            AutomationProperties.Name="Chapter text"
+                            IsEnabled="{Binding HasChapter}"
+                            PlaceholderText="Imported chapter text will appear here."
+                            Text="{Binding ChapterText}"
+                            TextWrapping="Wrap"
+                            VerticalContentAlignment="Top" />
+                    </TabItem>
+                    <TabItem Header="Narrative">
+                        <Grid RowDefinitions="Auto,Auto,*" Margin="0,12,0,0">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button
+                                    Classes="accent"
+                                    Content="Analyze chapter"
+                                    Command="{Binding AnalyzeChapterCommand}" />
+                                <Button
+                                    Content="Cancel"
+                                    Command="{Binding AnalyzeChapterCancelCommand}"
+                                    IsVisible="{Binding IsAnalyzing}" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    VerticalAlignment="Center"
+                                    Text="{Binding AnalyzerName, StringFormat='Analyzer: {0}'}" />
+                            </StackPanel>
+                            <StackPanel Grid.Row="1" Spacing="4" Margin="0,12">
+                                <ProgressBar
+                                    Maximum="1"
+                                    AutomationProperties.Name="Analysis progress"
+                                    IsVisible="{Binding IsAnalyzing}"
+                                    Value="{Binding AnalysisProgress}" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding AnalysisStatus}"
+                                    TextWrapping="Wrap" />
+                                <TextBlock
+                                    IsVisible="{Binding IsAnalysisStale}"
+                                    Text="The chapter text changed since the last analysis. Analyze again to refresh the segments."
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Grid Grid.Row="2" ColumnDefinitions="220,Auto,*">
+                                <DockPanel>
+                                    <TextBlock Classes="heading" DockPanel.Dock="Top" Margin="0,0,0,8" Text="Characters" />
+                                    <ListBox AutomationProperties.Name="Characters" ItemsSource="{Binding Characters}">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:CharacterItem">
+                                                <StackPanel Margin="0,2">
+                                                    <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
+                                                    <TextBlock Classes="secondary" Text="{Binding Detail}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </DockPanel>
+                                <GridSplitter Grid.Column="1" Width="4" ResizeDirection="Columns" />
+                                <DockPanel Grid.Column="2">
+                                    <TextBlock Classes="heading" DockPanel.Dock="Top" Margin="8,0,0,8" Text="Segments" />
+                                    <ListBox AutomationProperties.Name="Segments" ItemsSource="{Binding Segments}">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:SegmentItem">
+                                                <StackPanel Margin="0,4">
+                                                    <TextBlock Classes="secondary" FontWeight="SemiBold" Text="{Binding Speaker}" />
+                                                    <TextBlock
+                                                        Classes.narration="{Binding IsNarration}"
+                                                        Text="{Binding Text}"
+                                                        TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </DockPanel>
+                            </Grid>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
             </DockPanel>
         </Grid>
     </DockPanel>

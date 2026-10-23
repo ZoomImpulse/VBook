@@ -6,7 +6,10 @@ using VBook.App.Services;
 using VBook.App.ViewModels;
 using VBook.App.Views;
 using VBook.Core.Books;
+using VBook.Core.Narrative;
 using VBook.Core.Projects;
+using VBook.Core.Providers;
+using VBook.Core.Worker;
 
 namespace VBook.App;
 
@@ -34,13 +37,21 @@ public partial class App : Application
     {
         var services = new ServiceCollection();
         services.AddSingleton<IBookImporter, EpubImporter>();
-        services.AddSingleton<IProjectStore>(_ =>
+        services.AddSingleton(_ =>
         {
             var projectDirectory = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "LocalAudiobookStudio");
             return new SqliteProjectStore(Path.Combine(projectDirectory, "projects.sqlite3"));
         });
+        services.AddSingleton<IProjectStore>(sp => sp.GetRequiredService<SqliteProjectStore>());
+        services.AddSingleton<INarrativeStore>(sp => sp.GetRequiredService<SqliteProjectStore>());
+        services.AddSingleton<ILlmProvider, MockLlmProvider>();
+        services.AddSingleton<ChapterAnalyzer>();
+        services.AddSingleton<IWorkerTransport, LocalWorkerHost>();
+        services.AddSingleton<INarrativeWorker>(sp => new ProtocolNarrativeWorker(
+            sp.GetRequiredService<IWorkerTransport>(),
+            sp.GetRequiredService<ILlmProvider>().Capabilities));
         services.AddSingleton<AvaloniaFilePickerService>();
         services.AddSingleton<IFilePickerService>(sp => sp.GetRequiredService<AvaloniaFilePickerService>());
         services.AddSingleton<MainWindowViewModel>();

@@ -48,11 +48,34 @@ book. The UI remains useful without any AI models.
 - Long-running jobs accept cancellation and persist completed segment results.
 - No book content, model prompts, or audio is uploaded or sent to telemetry.
 
+## Narrative analysis and the worker contract (stage 3)
+
+- `VBook.Core.Narrative` models a chapter as ordered `NarrativeSegment`s
+  (narration or attributed dialogue) that store only offsets into the chapter
+  text, so the source text stays authoritative. `AnalysisValidator` rejects gaps,
+  overlaps, empty segments, and unknown speakers; `ChapterAnalysis.SourceHash`
+  marks an analysis stale when the chapter text is edited afterwards.
+- `ILlmProvider` and `ITtsProvider` expose `ProviderCapabilities` (name, whether
+  it is a mock, context budget). `ChapterAnalyzer` enforces the budget by chunking
+  at line breaks, carries known characters forward between chunks, merges the
+  results, and validates the whole. `MockLlmProvider` (quote-based heuristics)
+  and `MockTtsProvider` (tone WAVs) run the pipeline without any model.
+- `WorkerProtocol` defines typed JSON messages with a `type` discriminator
+  (`analyzeChapter`, `cancel` / `progress`, `analysisCompleted`, `failed`,
+  `cancelled`). The app talks to `INarrativeWorker`; `ProtocolNarrativeWorker`
+  speaks the protocol over an `IWorkerTransport`. `LocalWorkerHost` is the
+  in-process transport today; the Python worker will be a process transport that
+  frames the same messages as JSON lines and sends `cancel` when the token fires.
+- `INarrativeStore` (implemented by `SqliteProjectStore`) persists project-wide
+  characters, per-chapter analyses, and segments in the same SQLite file.
+
 ## Staged implementation
 
 1. Architecture and EPUB import with chapter-order tests.
 2. Avalonia book workspace, editable text, and transactional SQLite project storage.
-3. Narrative models and local worker contracts with mock providers.
+3. Narrative models and local worker contracts with mock providers. (Done: the
+   Narrative tab analyzes a chapter with the mock provider, lists characters and
+   attributed segments, and persists them.)
 4. Resumable generation and audio playback/export.
 5. Validated local Qwen-compatible LLM and Qwen3-TTS integrations; evaluate
    additional providers only after compatibility is demonstrated.
