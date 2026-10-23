@@ -1,0 +1,28 @@
+# .NET build output
+**/bin/
+**/obj/
+.vs/
+
+# Local tooling and project state
+.serena/
+.vscode/
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local models and generated audiobook assets
+models/
+audio/
+projects/
+*.sqlite
+*.sqlite3
+*.db
+
+# OS/editor files
+Thumbs.db
+Desktop.ini
+*.user
+*.suo
