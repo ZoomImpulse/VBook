@@ -1,58 +1,131 @@
 using System.Collections.ObjectModel;
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using VBook.App.Services;
 using VBook.Core.Books;
+using VBook.Core.Projects;
 
 namespace VBook.App.ViewModels;
 
-public sealed class MainWindowViewModel : INotifyPropertyChanged
+public sealed partial class MainWindowViewModel : ViewModelBase
 {
+    private const string AppTitle = "Local Audiobook Studio";
+
     private readonly IBookImporter _bookImporter;
+    private readonly IProjectStore _projectStore;
+    private readonly IFilePickerService _filePicker;
     private readonly Dictionary<string, string> _editedTextByChapter = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _saveGate = new(1, 1);
+    private CancellationTokenSource? _autosaveCancellation;
+    private Task? _autosaveTask;
+    private Guid? _projectId;
+    private DateTimeOffset _projectCreatedAt;
+    private string _sourcePath = string.Empty;
+    private bool _loadingChapterText;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SaveProjectCommand))]
     private ImportedBook? _book;
+
+    [ObservableProperty]
     private ImportedChapter? _selectedChapter;
+
+    [ObservableProperty]
+    private string _chapterText = string.Empty;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(OpenRecentProjectCommand))]
+    private RecentProject? _selectedRecentProject;
+
+    [ObservableProperty]
     private string _statusMessage = "Import an EPUB to begin.";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ImportEpubCommand))]
+    [NotifyCanExecuteChangedFor(nameof(OpenRecentProjectCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SaveProjectCommand))]
     private bool _isBusy;
 
-    public MainWindowViewModel(IBookImporter bookImporter)
+    public MainWindowViewModel(
+        IBookImporter bookImporter,
+        IProjectStore projectStore,
+        IFilePickerService filePicker)
     {
         _bookImporter = bookImporter;
+        _projectStore = projectStore;
+        _filePicker = filePicker;
     }
-
-    public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableCollection<ImportedChapter> Chapters { get; } = [];
 
-    public ImportedBook? Book
+    public ObservableCollection<RecentProject> RecentProjects { get; } = [];
+
+    public string WindowTitle => Book is null ? AppTitle : $"{Book.Title} — {AppTitle}";
+
+    public bool HasChapter => SelectedChapter is not null;
+
+    public string ChapterHeading => SelectedChapter?.Title ?? "No chapter selected";
+
+    partial void OnBookChanged(ImportedBook? value) => OnPropertyChanged(nameof(WindowTitle));
+
+    partial void OnSelectedChapterChanged(ImportedChapter? value)
     {
-        get => _book;
-        private set => SetProperty(ref _book, value);
+        OnPropertyChanged(nameof(HasChapter));
+        OnPropertyChanged(nameof(ChapterHeading));
+        _loadingChapterText = true;
+        try
+        {
+            ChapterText = value is null ? string.Empty : GetChapterText(value);
+        }
+        finally
+        {
+            _loadingChapterText = false;
+        }
     }
 
-    public ImportedChapter? SelectedChapter
+    partial void OnChapterTextChanged(string value)
     {
-        get => _selectedChapter;
-        set => SetProperty(ref _selectedChapter, value);
+        if (_loadingChapterText || SelectedChapter is null)
+        {
+            return;
+        }
+
+        _editedTextByChapter[SelectedChapter.Id] = value;
+        ScheduleAutosave();
     }
 
-    public string StatusMessage
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        get => _statusMessage;
-        private set => SetProperty(ref _statusMessage, value);
+        try
+        {
+            await _projectStore.InitializeAsync(cancellationToken);
+            await RefreshRecentProjectsAsync(cancellationToken);
+            var mostRecent = RecentProjects.FirstOrDefault();
+            if (mostRecent is not null)
+            {
+                await LoadProjectAsync(mostRecent.Id, cancellationToken);
+            }
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Could not open saved projects: {exception.Message}";
+        }
     }
 
-    public bool IsBusy
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task ImportEpubAsync(CancellationToken cancellationToken)
     {
-        get => _isBusy;
-        private set => SetProperty(ref _isBusy, value);
-    }
+        var filePath = await _filePicker.PickEpubAsync();
+        if (filePath is null)
+        {
+            return;
+        }
 
-    public async Task ImportEpubAsync(string filePath, CancellationToken cancellationToken = default)
-    {
         IsBusy = true;
         StatusMessage = "Reading EPUB…";
         try
         {
+            await FlushPendingSaveAsync();
             await using var stream = new FileStream(
                 filePath,
                 FileMode.Open,
@@ -60,20 +133,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 FileShare.Read,
                 bufferSize: 64 * 1024,
                 useAsync: true);
-            var importedBook = await Task.Run(
-                () => _bookImporter.Import(stream),
-                cancellationToken);
+            var importedBook = await Task.Run(() => _bookImporter.Import(stream), cancellationToken);
 
-            Book = importedBook;
-            Chapters.Clear();
-            _editedTextByChapter.Clear();
-            foreach (var chapter in importedBook.Chapters)
-            {
-                Chapters.Add(chapter);
-            }
-
-            SelectedChapter = Chapters.FirstOrDefault();
-            StatusMessage = $"Imported {Chapters.Count} chapters from {importedBook.Title}.";
+            _projectId = Guid.NewGuid();
+            _projectCreatedAt = DateTimeOffset.UtcNow;
+            _sourcePath = filePath;
+            ShowBook(importedBook.Title, importedBook.Chapters);
+            await SaveCurrentProjectCoreAsync(cancellationToken);
+            await RefreshRecentProjectsAsync(cancellationToken);
+            StatusMessage = $"Imported and saved {Chapters.Count} chapters from {importedBook.Title}.";
         }
         catch (OperationCanceledException)
         {
@@ -91,59 +159,181 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         {
             StatusMessage = $"Could not access EPUB: {exception.Message}";
         }
+        catch (Exception exception)
+        {
+            StatusMessage = $"The book was imported, but the project could not be saved: {exception.Message}";
+        }
         finally
         {
             IsBusy = false;
         }
     }
 
-    public void UpdateSelectedText(string text)
+    [RelayCommand(CanExecute = nameof(CanOpenRecent))]
+    private async Task OpenRecentProjectAsync(CancellationToken cancellationToken)
     {
-        if (SelectedChapter is null)
+        if (SelectedRecentProject is not { } recent)
         {
             return;
         }
 
-        _editedTextByChapter[SelectedChapter.Id] = text;
-        var index = -1;
-        for (var chapterIndex = 0; chapterIndex < Chapters.Count; chapterIndex++)
+        IsBusy = true;
+        try
         {
-            if (string.Equals(Chapters[chapterIndex].Id, SelectedChapter.Id, StringComparison.Ordinal))
+            await FlushPendingSaveAsync();
+            await LoadProjectAsync(recent.Id, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Could not open saved project: {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanSave))]
+    private async Task SaveProjectAsync(CancellationToken cancellationToken)
+    {
+        CancelPendingAutosave();
+        try
+        {
+            await SaveCurrentProjectCoreAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Could not save project: {exception.Message}";
+        }
+    }
+
+    public Task FlushAsync() => FlushPendingSaveAsync();
+
+    private bool CanRun() => !IsBusy;
+
+    private bool CanOpenRecent() => !IsBusy && SelectedRecentProject is not null;
+
+    private bool CanSave() => !IsBusy && Book is not null;
+
+    private string GetChapterText(ImportedChapter chapter) =>
+        _editedTextByChapter.TryGetValue(chapter.Id, out var edited) ? edited : chapter.Text;
+
+    private void ShowBook(string title, IReadOnlyList<ImportedChapter> chapters)
+    {
+        Book = new ImportedBook(title, chapters);
+        _editedTextByChapter.Clear();
+        Chapters.Clear();
+        foreach (var chapter in chapters)
+        {
+            Chapters.Add(chapter);
+        }
+
+        SelectedChapter = Chapters.FirstOrDefault();
+    }
+
+    private async Task LoadProjectAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        var project = await _projectStore.LoadAsync(projectId, cancellationToken);
+        if (project is null)
+        {
+            StatusMessage = "That saved project could not be found.";
+            await RefreshRecentProjectsAsync(cancellationToken);
+            return;
+        }
+
+        _projectId = project.Id;
+        _projectCreatedAt = project.CreatedAt;
+        _sourcePath = project.SourcePath;
+        ShowBook(project.Title, project.Chapters);
+        SelectedRecentProject = RecentProjects.FirstOrDefault(p => p.Id == project.Id);
+        StatusMessage = $"Opened {project.Title}.";
+    }
+
+    private async Task SaveCurrentProjectCoreAsync(CancellationToken cancellationToken)
+    {
+        if (Book is null || _projectId is null)
+        {
+            return;
+        }
+
+        await _saveGate.WaitAsync(cancellationToken);
+        try
+        {
+            var project = new AudiobookProject(
+                _projectId.Value,
+                Book.Title,
+                _sourcePath,
+                _projectCreatedAt,
+                DateTimeOffset.UtcNow,
+                Chapters.Select(chapter => chapter with { Text = GetChapterText(chapter) }).ToArray());
+            await _projectStore.SaveAsync(project, cancellationToken);
+            StatusMessage = $"Saved {project.Title}.";
+        }
+        finally
+        {
+            _saveGate.Release();
+        }
+    }
+
+    private void ScheduleAutosave()
+    {
+        CancelPendingAutosave();
+        var cancellation = new CancellationTokenSource();
+        _autosaveCancellation = cancellation;
+        StatusMessage = "Changes will be saved automatically…";
+        _autosaveTask = AutosaveAfterDelayAsync(cancellation);
+    }
+
+    private async Task AutosaveAfterDelayAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(800), cancellation.Token);
+            await SaveCurrentProjectCoreAsync(cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Autosave failed ({exception.GetType().Name}): {exception.Message}";
+        }
+        finally
+        {
+            if (ReferenceEquals(_autosaveCancellation, cancellation))
             {
-                index = chapterIndex;
-                break;
+                _autosaveCancellation = null;
+                _autosaveTask = null;
             }
-        }
 
-        if (index < 0)
-        {
-            return;
-        }
-
-        var updated = SelectedChapter with { Text = text };
-        if (Book is not null)
-        {
-            var chapters = Chapters.ToArray();
-            chapters[index] = updated;
-            Book = Book with { Chapters = chapters };
+            cancellation.Dispose();
         }
     }
 
-    public string GetChapterText(ImportedChapter chapter)
+    private async Task FlushPendingSaveAsync()
     {
-        return _editedTextByChapter.TryGetValue(chapter.Id, out var editedText)
-            ? editedText
-            : chapter.Text;
-    }
-
-    private void SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
+        var pendingTask = _autosaveTask;
+        CancelPendingAutosave();
+        if (pendingTask is not null)
         {
-            return;
+            await pendingTask;
         }
 
-        field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        await SaveCurrentProjectCoreAsync(CancellationToken.None);
+    }
+
+    private void CancelPendingAutosave() => _autosaveCancellation?.Cancel();
+
+    private async Task RefreshRecentProjectsAsync(CancellationToken cancellationToken)
+    {
+        var recent = await _projectStore.GetRecentAsync(cancellationToken);
+        var selectedId = _projectId;
+        RecentProjects.Clear();
+        foreach (var project in recent)
+        {
+            RecentProjects.Add(project);
+        }
+
+        SelectedRecentProject = RecentProjects.FirstOrDefault(p => p.Id == selectedId);
     }
 }

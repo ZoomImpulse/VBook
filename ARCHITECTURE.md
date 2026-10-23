@@ -9,9 +9,10 @@ book. The UI remains useful without any AI models.
 
 ## Components
 
-- **VBook.App**: WinUI 3 desktop application using MVVM-oriented view models and
-  dependency injection. The initial workspace focuses on import and chapter
-  editing.
+- **VBook.App**: Avalonia desktop application (MVVM with CommunityToolkit.Mvvm,
+  compiled bindings, resource-based design tokens, dependency injection, and a
+  file-picker service abstraction). The initial workspace focuses on import and
+  chapter editing.
 - **VBook.Core**: UI-independent domain types and EPUB parsing. Provider
   abstractions, project persistence, and narrative memory belong here as they are
   implemented.
@@ -27,8 +28,9 @@ book. The UI remains useful without any AI models.
 1. The user selects an EPUB in the desktop application.
 2. `VBook.Core` reads the EPUB container, package manifest, and spine directly
    from the ZIP archive and emits chapters in spine order.
-3. The UI displays extracted text without changing the original. Edits are
-   applied to the in-memory project until persistence is added.
+3. The UI displays extracted text without changing the original. Project
+   metadata and chapter text are saved transactionally to a local SQLite
+   project catalog; recent projects can be reopened after restarting.
 4. Future chapter analysis packages only a bounded scene and relevant SQLite
    memory for the configured local LLM provider.
 5. Validated direction decisions are sent to a TTS provider, with generated
@@ -49,12 +51,11 @@ book. The UI remains useful without any AI models.
 ## Staged implementation
 
 1. Architecture and EPUB import with chapter-order tests.
-2. WinUI book workspace and editable chapter text.
-3. SQLite project/narrative models and local worker contracts with mock providers.
+2. Avalonia book workspace, editable text, and transactional SQLite project storage.
+3. Narrative models and local worker contracts with mock providers.
 4. Resumable generation and audio playback/export.
 5. Validated local Qwen-compatible LLM and Qwen3-TTS integrations; evaluate
    additional providers only after compatibility is demonstrated.
 
-The development environment currently provides .NET 8 and Python 3.11. The
-initial desktop target uses .NET 8, which is available here; upgrading the target
-framework requires installing and validating the corresponding SDK.
+The solution targets .NET 10 (SDK 10.0.x). The Python worker environment is
+Python 3.11.
