@@ -49,6 +49,64 @@ public sealed class AudioGenerationTests
     }
 
     [Fact]
+    public async Task SegmentGeneration_ReusesOtherSegmentsAndRebuildsCompletedChapter()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"vbook-test-{Guid.NewGuid():N}", "projects.sqlite3");
+        try
+        {
+            var store = new SqliteProjectStore(databasePath);
+            await store.InitializeAsync();
+            var projectId = Guid.NewGuid();
+            const string text = "One. Two.";
+            await store.SaveAsync(new AudiobookProject(projectId, "Book", "book.epub",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                [new ImportedChapter("c1", "Chapter", text)], NarrationMode.SingleNarrator));
+            var analysis = new ChapterAnalysis("c1", TextFingerprint.Compute(text), [],
+                [new NarrativeSegment(0, SegmentKind.Narration, null, 0, 5),
+                 new NarrativeSegment(1, SegmentKind.Narration, null, 5, 4)], NarrationMode.SingleNarrator);
+            var provider = new RecordingTtsProvider();
+            var service = new AudioGenerationService(store, provider);
+            var assignments = new Dictionary<string, string> { ["narrator"] = "mock-warm" };
+            var reported = new List<GeneratedAudioSegment>();
+            var progress = new SegmentProgress(reported);
+
+            var partial = await service.GenerateSegmentAsync(projectId, "c1", text, analysis,
+                NarrationMode.SingleNarrator, assignments, 1, CancellationToken.None,
+                defaultLanguage: "English", segmentProgress: progress);
+            Assert.Null(partial);
+            Assert.Equal(["Two."], provider.Texts);
+            Assert.Equal(1, Assert.Single(reported).Index);
+
+            reported.Clear();
+            var chapter = await service.GenerateChapterAsync(projectId, "c1", text, analysis,
+                NarrationMode.SingleNarrator, assignments, null, CancellationToken.None,
+                defaultLanguage: "English", segmentProgress: progress);
+            Assert.Equal(["Two.", "One."], provider.Texts);
+            Assert.Equal([0, 1], reported.Select(item => item.Index));
+
+            reported.Clear();
+            var regenerated = await service.GenerateSegmentAsync(projectId, "c1", text, analysis,
+                NarrationMode.SingleNarrator, assignments, 1, CancellationToken.None,
+                defaultLanguage: "English", segmentProgress: progress);
+            Assert.NotNull(regenerated);
+            Assert.Equal(chapter.Job.Id, regenerated.Job.Id);
+            Assert.Equal(["Two.", "One.", "Two."], provider.Texts);
+            Assert.Equal([0, 1], reported.Select(item => item.Index));
+            Assert.Equal(2, (await store.LoadGeneratedSegmentsAsync(chapter.Job.Id)).Count);
+            Assert.Equal(GenerationJobStatus.Completed, regenerated.Job.Status);
+        }
+        finally
+        {
+            DeleteDirectory(databasePath);
+        }
+    }
+
+    private sealed class SegmentProgress(List<GeneratedAudioSegment> segments) : IProgress<GeneratedAudioSegment>
+    {
+        public void Report(GeneratedAudioSegment value) => segments.Add(value);
+    }
+
+    [Fact]
     public async Task Generation_PersistsCompletedSegmentsAndResumesAfterCancellation()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"vbook-test-{Guid.NewGuid():N}", "projects.sqlite3");

@@ -36,8 +36,9 @@ never modified.
   the original text, and review decisions persist locally.
 - Narration mode and voice assignments are saved per project. **Produce →
   Chapter audio** generates WAV chapter audio, stores completed segments in
-  SQLite so interrupted jobs can resume, and supports WAV export and in-app
-  play, pause, resume, and stop controls. **Publish** analyzes chapters as
+  SQLite so interrupted jobs can resume. Individual segments can be generated,
+  played as soon as they are ready, and regenerated; chapter audio supports WAV
+  export and in-app play, pause, resume, and stop controls. **Publish** analyzes chapters as
   needed and generates every non-skipped chapter in order; the queue reflects
   saved analysis and audio-job readiness. Export a completed book as M4B with
   chapter markers using FFmpeg. Qwen3-TTS is the default speech engine, with

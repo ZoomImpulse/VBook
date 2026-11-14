@@ -735,6 +735,11 @@
                                     IsVisible="{Binding IsGeneratingChapter}" />
                                 <Button
                                     Margin="0,0,8,8"
+                                    Content="Cancel segment generation"
+                                    Command="{Binding GenerateSegmentCancelCommand}"
+                                    IsVisible="{Binding IsGeneratingSegment}" />
+                                <Button
+                                    Margin="0,0,8,8"
                                     Content="Play / Resume"
                                     Command="{Binding PlayGeneratedAudioCommand}" />
                                 <Button
@@ -780,15 +785,24 @@
                                     VerticalAlignment="Center"
                                     Text="{Binding AudioPlaybackTime}" />
                             </Grid>
-                            <Border Grid.Row="3" Classes="card" Padding="16">
-                                <StackPanel Spacing="6">
-                                    <TextBlock FontWeight="SemiBold" Text="Voice profiles are managed in Voice Designer" />
-                                    <TextBlock
-                                        Classes="secondary"
-                                        Text="Review, edit, apply, and preview narrator and character profiles in the Voice Designer tab."
-                                        TextWrapping="Wrap" />
-                                </StackPanel>
-                            </Border>
+                            <ListBox Grid.Row="3" AutomationProperties.Name="Chapter audio segments" ItemsSource="{Binding Segments}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:SegmentItem">
+                                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" Margin="0,4">
+                                            <StackPanel>
+                                                <TextBlock Classes="secondary" FontWeight="SemiBold" Text="{Binding Speaker}" />
+                                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="Play" IsEnabled="{Binding HasAudio}"
+                                                    Command="{Binding $parent[Window].DataContext.PlaySegmentCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Grid.Column="2" Content="Generate / retry"
+                                                    Command="{Binding $parent[Window].DataContext.GenerateSegmentCommand}"
+                                                    CommandParameter="{Binding}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </Grid>
                     </TabItem>
                         </TabControl>
