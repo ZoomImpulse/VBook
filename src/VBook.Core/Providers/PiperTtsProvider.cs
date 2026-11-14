@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
 using VBook.Core.Generation;
 
 namespace VBook.Core.Providers;
@@ -17,6 +18,7 @@ public sealed class PiperTtsProvider : ITtsProvider
 {
     private readonly string _executablePath;
     private readonly IReadOnlyDictionary<string, string> _models;
+    private readonly IReadOnlyDictionary<string, string> _languagesByVoice;
     private readonly IPiperProcessRunner _processRunner;
 
     public PiperTtsProvider(
@@ -46,9 +48,22 @@ public sealed class PiperTtsProvider : ITtsProvider
 
         _processRunner = processRunner ?? new PiperProcessRunner();
         VoiceIds = _models.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        _languagesByVoice = _models.ToDictionary(
+            model => model.Key,
+            model => ReadLanguageName(model.Value),
+            StringComparer.OrdinalIgnoreCase);
+        Languages = _languagesByVoice.Values
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     public IReadOnlyList<string> VoiceIds { get; }
+
+    public IReadOnlyList<string> Languages { get; }
+
+    public IReadOnlyList<string> GetLanguagesForVoice(string voiceId) =>
+        _languagesByVoice.TryGetValue(voiceId, out var language) ? [language] : [];
 
     public ProviderCapabilities Capabilities { get; } =
         new("Piper local neural speech", IsMock: false, MaxContextCharacters: 2000);
@@ -60,6 +75,7 @@ public sealed class PiperTtsProvider : ITtsProvider
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Text);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.VoiceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Language);
         if (request.Text.Length > Capabilities.MaxContextCharacters)
         {
             throw new ArgumentException("The text exceeds Piper's request limit.", nameof(request));
@@ -68,6 +84,16 @@ public sealed class PiperTtsProvider : ITtsProvider
         if (!_models.TryGetValue(request.VoiceId, out var modelPath))
         {
             throw new ArgumentException($"Piper voice '{request.VoiceId}' is not available.", nameof(request));
+        }
+
+        if (!string.Equals(
+                request.Language,
+                _languagesByVoice[request.VoiceId],
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"Piper voice '{request.VoiceId}' requires the language '{_languagesByVoice[request.VoiceId]}'.",
+                nameof(request));
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -84,6 +110,36 @@ public sealed class PiperTtsProvider : ITtsProvider
         }
 
         return new SpeechResult(wavBytes, TimeSpan.FromSeconds(durationSeconds));
+    }
+
+    private static string ReadLanguageName(string modelPath)
+    {
+        var configPath = modelPath + ".json";
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(configPath));
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("language", out var language) &&
+                language.ValueKind == JsonValueKind.Object &&
+                language.TryGetProperty("name", out var name) &&
+                name.ValueKind == JsonValueKind.String)
+            {
+                var languageName = name.GetString();
+                if (!string.IsNullOrWhiteSpace(languageName))
+                {
+                    return languageName;
+                }
+            }
+
+            throw new InvalidDataException(
+                $"Piper voice configuration '{configPath}' does not declare a language name.");
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException(
+                $"Piper voice configuration '{configPath}' is not valid JSON.",
+                exception);
+        }
     }
 }
 

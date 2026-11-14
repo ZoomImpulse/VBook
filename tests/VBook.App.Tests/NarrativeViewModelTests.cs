@@ -28,6 +28,27 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public void VoiceAssignmentItem_ShowsNativeLanguageWithoutChangingVoiceIds()
+    {
+        var assignment = new VoiceAssignmentItem(
+            "narrator",
+            "Narrator",
+            ["Aiden", "Vivian"],
+            voiceId => voiceId == "Aiden" ? "English" : "Chinese",
+            ["English", "Chinese"],
+            supportsInstructions: true,
+            profile: new SpeechVoiceProfile("Aiden", string.Empty, string.Empty));
+
+        Assert.Equal(["Aiden (native: English)", "Vivian (native: Chinese)"], assignment.VoiceOptions);
+        Assert.Equal("Aiden (native: English)", assignment.VoiceSelection);
+
+        assignment.VoiceSelection = "Vivian (native: Chinese)";
+
+        Assert.Equal("Vivian", assignment.VoiceId);
+        Assert.Equal("Vivian (native: Chinese)", assignment.VoiceSelection);
+    }
+
+    [Fact]
     public async Task Analyze_ShowsSegmentsAndCharacters_AndSurvivesReopen()
     {
         var (viewModel, store) = await CreateImportedViewModelAsync(new MockLlmProvider());
@@ -85,13 +106,17 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         viewModel.QueueSearchText = string.Empty;
         Assert.Single(viewModel.VisibleChapterQueue);
         Assert.False(viewModel.IsQueueSearchEmpty);
+        viewModel.BookLanguage = "English";
 
         await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
 
         Assert.Equal("Ready to generate", Assert.Single(viewModel.ChapterQueue).Status);
+        Assert.True(viewModel.GenerateChapterCommand.CanExecute(null));
         await viewModel.GenerateChapterCommand.ExecuteAsync(null);
 
-        Assert.Equal("Audio ready", Assert.Single(viewModel.ChapterQueue).Status);
+        Assert.True(
+            Assert.Single(viewModel.ChapterQueue).Status == "Audio ready",
+            $"Queue status: {Assert.Single(viewModel.ChapterQueue).Status}; generation: {viewModel.GenerationStatus}");
         Assert.Equal("1 of 1 narratable chapters have audio.", viewModel.BookReadinessSummary);
 
         viewModel.ChapterText += " Edited after generation.";
@@ -202,6 +227,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         await viewModel.InitializeAsync();
         await viewModel.ImportEpubCommand.ExecuteAsync(null);
         await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
+        viewModel.BookLanguage = "English";
 
         var assignment = Assert.Single(viewModel.VoiceAssignments, item => item.SpeakerId == "narrator");
         assignment.VoiceId = "mock-deep";
@@ -218,6 +244,53 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         Assert.True(audioPlayback.IsPlaying);
         Assert.Contains("Playing the Spanish voice preview", viewModel.GenerationStatus);
         Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task VoiceLanguages_RequireBookDefaultAndPersistPerVoiceOverrides()
+    {
+        var provider = new RecordingTtsProvider();
+        var store = new SqliteProjectStore(Path.Combine(_directory, "voice-languages.sqlite3"));
+        using var viewModel = CreateViewModel(
+            store,
+            new MockLlmProvider(),
+            ttsProvider: provider);
+        await viewModel.InitializeAsync();
+        await viewModel.ImportEpubCommand.ExecuteAsync(null);
+        viewModel.UseMultipleVoices = true;
+        await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.GenerateChapterCommand.CanExecute(null));
+        Assert.False(viewModel.GenerateBookCommand.CanExecute(null));
+        await WaitUntilAsync(() =>
+            Assert.Single(viewModel.ChapterQueue).Status == "Select voice language");
+
+        viewModel.BookLanguage = "English";
+        Assert.True(viewModel.GenerateChapterCommand.CanExecute(null));
+        await WaitUntilAsync(() =>
+            Assert.Single(viewModel.ChapterQueue).Status == "Ready to generate");
+        var narrator = Assert.Single(viewModel.VoiceAssignments, item => item.SpeakerId == "narrator");
+        var character = Assert.Single(viewModel.VoiceAssignments, item => item.SpeakerName == "Mary");
+        Assert.Equal(VoiceAssignmentItem.BookDefaultLanguageOption, narrator.LanguageSelection);
+        character.LanguageSelection = "Spanish";
+        await WaitUntilAsync(async () =>
+            (await store.LoadVoiceProfilesAsync(
+                viewModel.RecentProjects.Single().Id,
+                provider.Capabilities.Name))
+            .GetValueOrDefault(character.SpeakerId)?.Language == "Spanish");
+        await viewModel.FlushAsync();
+
+        using var reopened = CreateViewModel(store, new MockLlmProvider(), ttsProvider: provider);
+        await reopened.InitializeAsync();
+        await WaitUntilAsync(() => reopened.VoiceAssignments.Count == 3);
+
+        Assert.Equal("English", reopened.BookLanguage);
+        Assert.Equal(
+            VoiceAssignmentItem.BookDefaultLanguageOption,
+            Assert.Single(reopened.VoiceAssignments, item => item.SpeakerId == "narrator").LanguageSelection);
+        Assert.Equal(
+            "Spanish",
+            Assert.Single(reopened.VoiceAssignments, item => item.SpeakerName == "Mary").LanguageSelection);
     }
 
     [Fact]
@@ -241,12 +314,20 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
 
         Assert.True(viewModel.SuggestVoiceInstructionCommand.CanExecute(narrator));
         viewModel.SuggestVoiceInstructionCommand.Execute(narrator);
-        Assert.Contains("Narrate a fantasy book", narrator.Instruction);
-        Assert.Contains("immersive and imaginative", narrator.Instruction);
+        Assert.Equal(
+            "Narrate in an immersive and vivid tone. Use measured pacing and suggest subtle wonder. Sound natural, not theatrical.",
+            narrator.Instruction);
 
         viewModel.SuggestVoiceInstructionCommand.Execute(character);
-        Assert.Contains("Portray Mary as a distinct, believable character", character.Instruction);
-        Assert.Contains("immersive and imaginative", character.Instruction);
+        Assert.Equal(
+            "Portray Mary as a distinct, believable character. Use an immersive and vivid tone. Use measured pacing and suggest subtle wonder. Keep the delivery conversational and natural.",
+            character.Instruction);
+
+        viewModel.DetectedGenre = "Non-fiction";
+        viewModel.SuggestVoiceInstructionCommand.Execute(narrator);
+        Assert.Equal(
+            "Narrate in a clear, measured, and informative tone. Keep a steady pace, articulate carefully, and use restrained emphasis on key ideas. Sound natural, not theatrical.",
+            narrator.Instruction);
     }
 
     [Fact]
@@ -274,6 +355,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         var exportPath = Path.Combine(_directory, "chapter.wav");
         var (viewModel, _) = await CreateImportedViewModelAsync(new MockLlmProvider(), exportPath);
         viewModel.UseMultipleVoices = false;
+        viewModel.BookLanguage = "English";
         await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
 
         await viewModel.GenerateChapterCommand.ExecuteAsync(null);
@@ -298,6 +380,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
             m4bExporter: exporter);
         await viewModel.InitializeAsync();
         await viewModel.ImportEpubCommand.ExecuteAsync(null);
+        viewModel.BookLanguage = "English";
 
         await viewModel.GenerateBookCommand.ExecuteAsync(null);
 
@@ -353,6 +436,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         var (viewModel, _) = await CreateImportedViewModelAsync(
             new MockLlmProvider(),
             audioPlayback: playback);
+        viewModel.BookLanguage = "English";
         await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
         await viewModel.GenerateChapterCommand.ExecuteAsync(null);
 
@@ -592,7 +676,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
 
     private sealed class FakeKokoroSpeechEngineFactory : IKokoroSpeechEngineFactory
     {
-        public IKokoroSpeechEngine Create(KokoroModelFiles modelFiles) =>
+        public IKokoroSpeechEngine Create(KokoroModelFiles modelFiles, string language) =>
             throw new NotSupportedException("The speech engine should not be created before downloading the model.");
     }
 
@@ -694,7 +778,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
 
         public IReadOnlyList<string> VoiceIds => _inner.VoiceIds;
 
-        public IReadOnlyList<string> Languages { get; } = ["Auto", "Spanish"];
+        public IReadOnlyList<string> Languages { get; } = ["English", "Spanish"];
 
         public bool SupportsVoiceInstructions => true;
 
@@ -705,7 +789,7 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
             CancellationToken cancellationToken)
         {
             LastRequest = request;
-            return _inner.SynthesizeAsync(request, cancellationToken);
+            return _inner.SynthesizeAsync(request with { Language = "English" }, cancellationToken);
         }
     }
 

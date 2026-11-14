@@ -69,7 +69,8 @@ public sealed class BookAudioGenerationService
         IReadOnlyDictionary<string, string> voiceAssignments,
         IProgress<GenerationProgress>? progress,
         CancellationToken cancellationToken,
-        IReadOnlyDictionary<string, SpeechVoiceProfile>? voiceProfiles = null)
+        IReadOnlyDictionary<string, SpeechVoiceProfile>? voiceProfiles = null,
+        string defaultLanguage = "")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(title);
         ArgumentNullException.ThrowIfNull(chapters);
@@ -112,7 +113,8 @@ public sealed class BookAudioGenerationService
                     cancellationToken,
                     chapter.Role,
                     review,
-                    voiceProfiles);
+                    voiceProfiles,
+                    defaultLanguage);
                 var wavPath = Path.Combine(workingDirectory, $"{index:D6}.wav");
                 await File.WriteAllBytesAsync(wavPath, generated.WavBytes, cancellationToken);
                 generatedChapters.Add(new GeneratedBookChapter(

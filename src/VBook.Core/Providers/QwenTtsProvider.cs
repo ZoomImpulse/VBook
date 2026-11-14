@@ -16,9 +16,23 @@ public sealed class QwenTtsProvider : ITtsProvider, IDisposable
 
     private static readonly string[] SupportedLanguages =
     [
-        "Auto", "Chinese", "English", "French", "German", "Italian", "Japanese",
+        "Chinese", "English", "French", "German", "Italian", "Japanese",
         "Korean", "Portuguese", "Russian", "Spanish"
     ];
+
+    private static readonly IReadOnlyDictionary<string, string> VoiceNativeLanguages =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Aiden"] = "English",
+            ["Dylan"] = "Chinese (Beijing dialect)",
+            ["Eric"] = "Chinese (Sichuan dialect)",
+            ["Ono_Anna"] = "Japanese",
+            ["Ryan"] = "English",
+            ["Serena"] = "Chinese",
+            ["Sohee"] = "Korean",
+            ["Uncle_Fu"] = "Chinese",
+            ["Vivian"] = "Chinese"
+        };
 
     private readonly IQwenTtsProcessRunner _runner;
 
@@ -30,6 +44,9 @@ public sealed class QwenTtsProvider : ITtsProvider, IDisposable
     public IReadOnlyList<string> VoiceIds { get; } = SupportedVoices;
 
     public IReadOnlyList<string> Languages { get; } = SupportedLanguages;
+
+    public string? GetVoiceNativeLanguage(string voiceId) =>
+        VoiceNativeLanguages.GetValueOrDefault(voiceId);
 
     public bool SupportsVoiceInstructions => true;
 

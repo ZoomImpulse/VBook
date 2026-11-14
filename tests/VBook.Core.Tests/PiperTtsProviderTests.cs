@@ -11,13 +11,13 @@ public sealed class PiperTtsProviderTests
         using var directory = new TemporaryDirectory();
         var modelPath = directory.AddVoice("en_US-test-medium");
         var audio = await new MockTtsProvider().SynthesizeAsync(
-            new SpeechRequest("Spoken text.", "mock-warm"),
+            new SpeechRequest("Spoken text.", "mock-warm", "English"),
             CancellationToken.None);
         var runner = new RecordingRunner(audio.WavBytes);
         var provider = new PiperTtsProvider("piper", directory.Path, runner);
 
         var result = await provider.SynthesizeAsync(
-            new SpeechRequest("Spoken text.", "en_US-test-medium"),
+            new SpeechRequest("Spoken text.", "en_US-test-medium", "English"),
             CancellationToken.None);
 
         Assert.Equal([Path.GetFileNameWithoutExtension(modelPath)], provider.VoiceIds);
@@ -50,9 +50,26 @@ public sealed class PiperTtsProviderTests
         var provider = new PiperTtsProvider("piper", directory.Path, runner);
 
         await Assert.ThrowsAsync<ArgumentException>(() => provider.SynthesizeAsync(
-            new SpeechRequest("Text.", "missing-voice"),
+            new SpeechRequest("Text.", "missing-voice", "English"),
             CancellationToken.None));
         Assert.Null(runner.ModelPath);
+    }
+
+    [Fact]
+    public async Task SynthesizeAsync_RejectsLanguageThatDoesNotMatchVoice()
+    {
+        using var directory = new TemporaryDirectory();
+        directory.AddVoice("en_US-test-medium");
+        var runner = new RecordingRunner([]);
+        var provider = new PiperTtsProvider("piper", directory.Path, runner);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => provider.SynthesizeAsync(
+            new SpeechRequest("Text.", "en_US-test-medium", "Spanish"),
+            CancellationToken.None));
+
+        Assert.Null(runner.ModelPath);
+        Assert.Equal(["English"], provider.GetLanguagesForVoice("en_US-test-medium"));
+        Assert.DoesNotContain("Auto", provider.Languages);
     }
 
     [Fact]
@@ -63,7 +80,7 @@ public sealed class PiperTtsProviderTests
         var provider = new PiperTtsProvider("piper", directory.Path, new RecordingRunner([1, 2, 3]));
 
         await Assert.ThrowsAsync<InvalidDataException>(() => provider.SynthesizeAsync(
-            new SpeechRequest("Text.", "en_US-test-medium"),
+            new SpeechRequest("Text.", "en_US-test-medium", "English"),
             CancellationToken.None));
     }
 
@@ -103,7 +120,7 @@ public sealed class PiperTtsProviderTests
         {
             var modelPath = System.IO.Path.Combine(Path, $"{voiceId}.onnx");
             File.WriteAllText(modelPath, string.Empty);
-            File.WriteAllText(modelPath + ".json", "{}");
+            File.WriteAllText(modelPath + ".json", """{"language":{"name":"English"}}""");
             return modelPath;
         }
 

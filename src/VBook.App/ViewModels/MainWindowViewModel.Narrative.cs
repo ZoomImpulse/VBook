@@ -20,6 +20,7 @@ public sealed partial class MainWindowViewModel
     private SpeechEditReview? _speechReview;
     private GeneratedBookAudio? _generatedBookAudio;
     private int _analysisLoadVersion;
+    private int _chapterQueueRefreshVersion;
     private byte[]? _generatedWavBytes;
     private int _voiceAssignmentUpdateDepth;
     private readonly IAudioPlaybackService _audioPlayback;
@@ -157,6 +158,12 @@ public sealed partial class MainWindowViewModel
     [NotifyCanExecuteChangedFor(nameof(SuggestVoiceInstructionCommand))]
     private string _detectedGenre = string.Empty;
 
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(GenerateChapterCommand))]
+    [NotifyCanExecuteChangedFor(nameof(GenerateBookCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceCommand))]
+    private string _bookLanguage = string.Empty;
+
     public ObservableCollection<SegmentItem> Segments { get; } = [];
 
     public ObservableCollection<CharacterItem> Characters { get; } = [];
@@ -189,9 +196,6 @@ public sealed partial class MainWindowViewModel
 
     public bool HasActiveAudioPlayback => IsAudioPlaying || IsAudioPaused;
 
-    public bool CanPreviewVoice => !IsBusy && !IsAnalyzing && !IsGenerating &&
-        !IsAnalyzingStructure && !IsPreviewingVoice && _ttsProvider.VoiceIds.Count > 0;
-
     public bool HasGeneratedBookAudio => _generatedBookAudio is not null;
 
     public bool IsGeneratingChapter => IsGenerating && !IsGeneratingBook;
@@ -214,6 +218,32 @@ public sealed partial class MainWindowViewModel
     public string TtsProviderName => _ttsProvider.Capabilities.Name;
 
     public IReadOnlyList<string> TtsLanguages => _ttsProvider.Languages;
+
+    partial void OnBookLanguageChanged(string value)
+    {
+        ClearGeneratedBookAudio();
+        ClearGeneratedAudioForChapterChange();
+        GenerateChapterCommand.NotifyCanExecuteChanged();
+        GenerateBookCommand.NotifyCanExecuteChanged();
+        PreviewVoiceCommand.NotifyCanExecuteChanged();
+        if (!_loadingProjectSettings && _projectId is not null)
+        {
+            ScheduleAutosave();
+            _ = RefreshChapterQueueForLanguageChangeAsync();
+        }
+    }
+
+    private async Task RefreshChapterQueueForLanguageChangeAsync()
+    {
+        try
+        {
+            await RefreshChapterQueueAsync();
+        }
+        catch (Exception exception)
+        {
+            GenerationStatus = $"Could not refresh the production queue for the selected language: {exception.Message}";
+        }
+    }
 
     public bool SupportsVoiceInstructions => _ttsProvider.SupportsVoiceInstructions;
 
@@ -507,6 +537,12 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        if (!HasValidVoiceLanguages())
+        {
+            GenerationStatus = "Select a book language and ensure every assigned voice supports it before generating.";
+            return;
+        }
+
         var chapters = Chapters.Select(chapter => chapter with { Text = GetChapterText(chapter) }).ToArray();
         if (!chapters.Any(chapter => chapter.Role != SectionRole.Skip))
         {
@@ -542,7 +578,8 @@ public sealed partial class MainWindowViewModel
                 assignments,
                 progress,
                 cancellationToken,
-                profiles);
+                profiles,
+                BookLanguage);
             if (_projectId == projectId && ReferenceEquals(Book, book))
             {
                 _generatedBookAudio = generated;
@@ -604,7 +641,7 @@ public sealed partial class MainWindowViewModel
 
     private bool CanGenerateBook() =>
         !IsBusy && !IsAnalyzing && !IsGenerating && !IsAnalyzingStructure && Book is not null &&
-        _ttsProvider.VoiceIds.Count > 0 &&
+        _ttsProvider.VoiceIds.Count > 0 && HasValidVoiceLanguages() &&
         Chapters.Any(chapter => chapter.Role != SectionRole.Skip);
 
     private bool CanExportBookAudio() => !IsBusy && !IsGenerating && _generatedBookAudio is not null;
@@ -1003,6 +1040,12 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        if (!HasValidVoiceLanguages())
+        {
+            GenerationStatus = "Select a book language and ensure every assigned voice supports it before generating.";
+            return;
+        }
+
         var text = GetChapterText(chapter);
         if (!analysis.Matches(
                 text,
@@ -1043,7 +1086,8 @@ public sealed partial class MainWindowViewModel
                 cancellationToken,
                 chapter.Role,
                 _speechReview?.ChapterId == chapter.Id ? _speechReview : null,
-                profiles);
+                profiles,
+                BookLanguage);
             if (_projectId == projectId && SelectedChapter?.Id == chapter.Id && ReferenceEquals(_analysis, analysis))
             {
                 ClearGeneratedBookAudio();
@@ -1153,11 +1197,14 @@ public sealed partial class MainWindowViewModel
                 ResetAudioPlayback();
             }
 
-            var language = _ttsProvider.Languages.Contains(
-                assignment.Language,
-                StringComparer.OrdinalIgnoreCase)
-                ? assignment.Language
-                : "Auto";
+            var language = ResolveEffectiveVoiceLanguage(assignment);
+            if (language is null)
+            {
+                GenerationStatus =
+                    $"Select a book language supported by {assignment.VoiceId}, or choose a supported language for this voice.";
+                return;
+            }
+
             var instruction = _ttsProvider.SupportsVoiceInstructions
                 ? assignment.Instruction
                 : string.Empty;
@@ -1225,38 +1272,39 @@ public sealed partial class MainWindowViewModel
         VoiceAssignmentItem assignment,
         string genre)
     {
-        var normalizedGenre = genre.ToLowerInvariant();
-        var delivery = normalizedGenre switch
+        var normalizedGenre = genre.Trim().ToLowerInvariant();
+        var (tone, direction) = normalizedGenre switch
         {
             var value when value.Contains("poetry", StringComparison.Ordinal) =>
-                "lyrical, expressive, and attentive to rhythm",
+                ("lyrical and expressive", "Respect rhythm and line breaks; keep emphasis controlled."),
             var value when value.Contains("fantasy", StringComparison.Ordinal) ||
                           value.Contains("science fiction", StringComparison.Ordinal) ||
                           value.Contains("sci-fi", StringComparison.Ordinal) =>
-                "immersive and imaginative",
+                ("immersive and vivid", "Use measured pacing and suggest subtle wonder."),
             var value when value.Contains("mystery", StringComparison.Ordinal) ||
                           value.Contains("thriller", StringComparison.Ordinal) ||
                           value.Contains("crime", StringComparison.Ordinal) =>
-                "controlled, atmospheric, and suspenseful",
+                ("restrained and quietly tense", "Keep pacing controlled and emphasize clues subtly; avoid melodrama."),
             var value when value.Contains("romance", StringComparison.Ordinal) =>
-                "warm and emotionally nuanced",
+                ("warm and intimate", "Convey gentle emotional nuance with natural pacing."),
             var value when value.Contains("horror", StringComparison.Ordinal) =>
-                "atmospheric and restrained",
+                ("atmospheric and restrained", "Use deliberate pacing and subtle tension; avoid theatrical scares."),
             var value when value.Contains("nonfiction", StringComparison.Ordinal) ||
                           value.Contains("non-fiction", StringComparison.Ordinal) ||
                           value.Contains("textbook", StringComparison.Ordinal) ||
                           value.Contains("academic", StringComparison.Ordinal) ||
                           value.Contains("history", StringComparison.Ordinal) =>
-                "clear, measured, and informative",
+                ("clear, measured, and informative", "Keep a steady pace, articulate carefully, and use restrained emphasis on key ideas."),
             var value when value.Contains("memoir", StringComparison.Ordinal) ||
                           value.Contains("biography", StringComparison.Ordinal) =>
-                "personal, warm, and reflective",
-            _ => "natural and engaging"
+                ("warm and reflective", "Use natural pacing and gentle emphasis; keep the delivery personal but restrained."),
+            _ => ("natural and engaging", "Keep a steady pace, articulate clearly, and use subtle emphasis.")
         };
+        var article = "aeiou".Contains(char.ToLowerInvariant(tone[0])) ? "an" : "a";
 
         return string.Equals(assignment.SpeakerId, "narrator", StringComparison.Ordinal)
-            ? $"Narrate a {genre} book with {delivery} delivery, clear diction, steady pacing, and subtle emphasis that supports the text without overperforming."
-            : $"Portray {assignment.SpeakerName} as a distinct, believable character in a {genre} book. Keep delivery {delivery} and conversational, with natural emphasis and no overacting.";
+            ? $"Narrate in {article} {tone} tone. {direction} Sound natural, not theatrical."
+            : $"Portray {assignment.SpeakerName} as a distinct, believable character. Use {article} {tone} tone. {direction} Keep the delivery conversational and natural.";
     }
 
     [RelayCommand(CanExecute = nameof(CanPauseAudio))]
@@ -1304,8 +1352,37 @@ public sealed partial class MainWindowViewModel
 
     private bool CanGenerateChapter() =>
         !IsBusy && !IsAnalyzing && !IsGenerating && HasAnalysis && !IsAnalysisStale &&
-        _ttsProvider.VoiceIds.Count > 0 &&
+        _ttsProvider.VoiceIds.Count > 0 && HasValidVoiceLanguages() &&
         SelectedChapter is { Role: not SectionRole.Skip };
+
+    private bool CanPreviewVoice(VoiceAssignmentItem assignment) =>
+        !IsBusy && !IsAnalyzing && !IsGenerating && !IsAnalyzingStructure &&
+        !string.IsNullOrWhiteSpace(BookLanguage) &&
+        _ttsProvider.Languages.Contains(BookLanguage, StringComparer.OrdinalIgnoreCase) &&
+        !IsPreviewingVoice && VoiceAssignments.Contains(assignment) &&
+        _ttsProvider.VoiceIds.Contains(assignment.VoiceId, StringComparer.Ordinal) &&
+        ResolveEffectiveVoiceLanguage(assignment) is not null;
+
+    private bool HasValidVoiceLanguages()
+    {
+        if (string.IsNullOrWhiteSpace(BookLanguage) ||
+            !_ttsProvider.Languages.Contains(BookLanguage, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return VoiceAssignments.All(assignment => ResolveEffectiveVoiceLanguage(assignment) is not null);
+    }
+
+    private string? ResolveEffectiveVoiceLanguage(VoiceAssignmentItem assignment)
+    {
+        var selectedLanguage = string.IsNullOrWhiteSpace(assignment.Language)
+            ? BookLanguage
+            : assignment.Language;
+        return _ttsProvider.GetLanguagesForVoice(assignment.VoiceId)
+            .FirstOrDefault(language =>
+                string.Equals(language, selectedLanguage, StringComparison.OrdinalIgnoreCase));
+    }
 
     private bool CanExportAudio() => _generatedWavBytes is not null && SelectedChapter is not null;
 
@@ -1493,7 +1570,8 @@ public sealed partial class MainWindowViewModel
                     id,
                     name,
                     _ttsProvider.VoiceIds,
-                    _ttsProvider.Languages,
+                    _ttsProvider.GetVoiceNativeLanguage,
+                    _ttsProvider.GetLanguagesForVoice(profile.VoiceId),
                     _ttsProvider.SupportsVoiceInstructions,
                     profile));
                 VoiceAssignments[^1].PropertyChanged += OnVoiceAssignmentChanged;
@@ -1511,6 +1589,9 @@ public sealed partial class MainWindowViewModel
         finally
         {
             _voiceAssignmentUpdateDepth--;
+            GenerateChapterCommand.NotifyCanExecuteChanged();
+            GenerateBookCommand.NotifyCanExecuteChanged();
+            PreviewVoiceCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -1538,7 +1619,24 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        if (e.PropertyName == nameof(VoiceAssignmentItem.VoiceId))
+        {
+            _voiceAssignmentUpdateDepth++;
+            try
+            {
+                assignment.SetSupportedLanguages(_ttsProvider.GetLanguagesForVoice(assignment.VoiceId));
+            }
+            finally
+            {
+                _voiceAssignmentUpdateDepth--;
+            }
+        }
+
         ClearGeneratedBookAudio();
+        ClearGeneratedAudioForChapterChange();
+        GenerateChapterCommand.NotifyCanExecuteChanged();
+        GenerateBookCommand.NotifyCanExecuteChanged();
+        PreviewVoiceCommand.NotifyCanExecuteChanged();
         _ = PersistVoiceAssignmentAsync(projectId, assignment, e.PropertyName == nameof(VoiceAssignmentItem.VoiceId));
     }
 

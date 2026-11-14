@@ -51,6 +51,12 @@ public sealed class LocalTtsProviderService : ITtsProvider, INotifyPropertyChang
 
     public IReadOnlyList<string> Languages => _currentProvider.Languages;
 
+    public IReadOnlyList<string> GetLanguagesForVoice(string voiceId) =>
+        _currentProvider.GetLanguagesForVoice(voiceId);
+
+    public string? GetVoiceNativeLanguage(string voiceId) =>
+        _currentProvider.GetVoiceNativeLanguage(voiceId);
+
     public bool SupportsVoiceInstructions => _currentProvider.SupportsVoiceInstructions;
 
     public bool IsKokoroInstalled => _kokoroAssets.IsInstalled;

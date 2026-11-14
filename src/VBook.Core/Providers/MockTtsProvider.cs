@@ -13,6 +13,8 @@ public sealed class MockTtsProvider : ITtsProvider
 
     public IReadOnlyList<string> VoiceIds { get; } = ["mock-warm", "mock-calm", "mock-bright", "mock-deep"];
 
+    public IReadOnlyList<string> Languages { get; } = ["English"];
+
     public ProviderCapabilities Capabilities { get; } =
         new("Mock tone synthesizer (no model)", IsMock: true, MaxContextCharacters: 2000);
 
@@ -21,6 +23,12 @@ public sealed class MockTtsProvider : ITtsProvider
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Text);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.VoiceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Language);
+        if (!Languages.Contains(request.Language, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Mock voice language '{request.Language}' is not available.", nameof(request));
+        }
+
         if (request.Text.Length > Capabilities.MaxContextCharacters)
         {
             throw new ArgumentException("The text exceeds this provider's request limit.", nameof(request));

@@ -13,6 +13,42 @@ namespace VBook.Core.Tests;
 public sealed class AudioGenerationTests
 {
     [Fact]
+    public void ResolveEffectiveVoiceProfiles_RequiresBookDefaultAndValidPerVoiceLanguages()
+    {
+        var service = new AudioGenerationService(
+            new SqliteProjectStore(Path.Combine(Path.GetTempPath(), $"vbook-test-{Guid.NewGuid():N}.sqlite3")),
+            new MockTtsProvider());
+        var profiles = new Dictionary<string, SpeechVoiceProfile>
+        {
+            ["narrator"] = new("mock-warm", string.Empty, string.Empty)
+        };
+
+        Assert.False(service.TryResolveEffectiveVoiceProfiles(
+            profiles,
+            string.Empty,
+            out _,
+            out var missingDefaultError));
+        Assert.Contains("book language", missingDefaultError, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(service.TryResolveEffectiveVoiceProfiles(
+            profiles,
+            "English",
+            out var inheritedProfiles,
+            out _));
+        Assert.Equal("English", inheritedProfiles["narrator"].Language);
+
+        Assert.False(service.TryResolveEffectiveVoiceProfiles(
+            new Dictionary<string, SpeechVoiceProfile>
+            {
+                ["narrator"] = new("mock-warm", "Spanish", string.Empty)
+            },
+            "English",
+            out _,
+            out var unsupportedOverrideError));
+        Assert.Contains("does not support", unsupportedOverrideError, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Generation_PersistsCompletedSegmentsAndResumesAfterCancellation()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"vbook-test-{Guid.NewGuid():N}", "projects.sqlite3");
@@ -51,7 +87,8 @@ public sealed class AudioGenerationTests
                 NarrationMode.SingleNarrator,
                 new Dictionary<string, string> { ["narrator"] = "mock-warm" },
                 new CancellingProgress(cancellation),
-                cancellation.Token));
+                cancellation.Token,
+                defaultLanguage: "English"));
 
             string pausedJobId;
             await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath};Pooling=False"))
@@ -74,7 +111,8 @@ public sealed class AudioGenerationTests
                 NarrationMode.SingleNarrator,
                 new Dictionary<string, string> { ["narrator"] = "mock-warm" },
                 null,
-                CancellationToken.None);
+                CancellationToken.None,
+                defaultLanguage: "English");
 
             Assert.Equal(GenerationJobStatus.Completed, resumed.Job.Status);
             Assert.Equal(Guid.Parse(pausedJobId), resumed.Job.Id);
@@ -121,7 +159,8 @@ public sealed class AudioGenerationTests
                 NarrationMode.SingleNarrator,
                 new Dictionary<string, string> { ["narrator"] = "mock-warm" },
                 progress: null,
-                CancellationToken.None);
+                CancellationToken.None,
+                defaultLanguage: "English");
 
             Assert.Equal(text, string.Concat(provider.Texts));
             Assert.All(provider.Texts, part => Assert.True(part.Length <= 28));
@@ -182,7 +221,8 @@ public sealed class AudioGenerationTests
                 new Dictionary<string, string>(),
                 null,
                 CancellationToken.None,
-                speechReview: review);
+                speechReview: review,
+                defaultLanguage: "English");
 
             Assert.Equal("Visit the example website.", Assert.Single(tts.Texts));
             Assert.Equal("Visit https://example.test.", source);
@@ -232,7 +272,8 @@ public sealed class AudioGenerationTests
                 NarrationMode.SingleNarrator,
                 new Dictionary<string, string>(),
                 null,
-                CancellationToken.None);
+                CancellationToken.None,
+                defaultLanguage: "English");
 
             Assert.Equal(["c1", "c3"], book.Chapters.Select(chapter => chapter.Id));
             Assert.All(book.Chapters, chapter =>
@@ -391,17 +432,17 @@ public sealed class AudioGenerationTests
 
             var first = await service.GenerateChapterAsync(
                 projectId, "c1", text, analysis, NarrationMode.SingleNarrator, assignments,
-                null, CancellationToken.None, voiceProfiles: firstProfile);
+                null, CancellationToken.None, voiceProfiles: firstProfile, defaultLanguage: "English");
             await service.GenerateChapterAsync(
                 projectId, "c1", text, analysis, NarrationMode.SingleNarrator, assignments,
-                null, CancellationToken.None, voiceProfiles: firstProfile);
+                null, CancellationToken.None, voiceProfiles: firstProfile, defaultLanguage: "English");
             var changedProfile = new Dictionary<string, SpeechVoiceProfile>
             {
                 ["narrator"] = new("mock-warm", "German", "Speak softly.")
             };
             var changed = await service.GenerateChapterAsync(
                 projectId, "c1", text, analysis, NarrationMode.SingleNarrator, assignments,
-                null, CancellationToken.None, voiceProfiles: changedProfile);
+                null, CancellationToken.None, voiceProfiles: changedProfile, defaultLanguage: "English");
 
             Assert.NotEqual(first.Job.Id, changed.Job.Id);
             Assert.Equal(2, provider.Requests.Count);
@@ -491,7 +532,7 @@ public sealed class AudioGenerationTests
 
         public IReadOnlyList<string> VoiceIds => _inner.VoiceIds;
 
-        public IReadOnlyList<string> Languages { get; } = ["Auto", "English", "German"];
+        public IReadOnlyList<string> Languages { get; } = ["English", "German"];
 
         public bool SupportsVoiceInstructions => true;
 
@@ -499,7 +540,7 @@ public sealed class AudioGenerationTests
         {
             Texts.Add(request.Text);
             Requests.Add(request);
-            return _inner.SynthesizeAsync(request, cancellationToken);
+            return _inner.SynthesizeAsync(request with { Language = "English" }, cancellationToken);
         }
 
     }

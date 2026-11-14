@@ -64,7 +64,7 @@ public interface IBookStructureProvider
 public sealed record SpeechRequest(
     string Text,
     string VoiceId,
-    string Language = "Auto",
+    string Language,
     string Instruction = "");
 
 public sealed record SpeechVoiceProfile(string VoiceId, string Language, string Instruction);
@@ -75,7 +75,9 @@ public interface ITtsProvider
 {
     ProviderCapabilities Capabilities { get; }
     IReadOnlyList<string> VoiceIds { get; }
-    IReadOnlyList<string> Languages => ["Auto"];
+    IReadOnlyList<string> Languages => ["English"];
+    IReadOnlyList<string> GetLanguagesForVoice(string voiceId) => Languages;
+    string? GetVoiceNativeLanguage(string voiceId) => null;
     bool SupportsVoiceInstructions => false;
 
     Task<SpeechResult> SynthesizeAsync(SpeechRequest request, CancellationToken cancellationToken);

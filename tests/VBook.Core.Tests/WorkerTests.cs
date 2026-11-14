@@ -106,15 +106,18 @@ public sealed class WorkerTests
     {
         var tts = new MockTtsProvider();
 
-        var short1 = await tts.SynthesizeAsync(new SpeechRequest("Hello there.", "mary"), default);
-        var long1 = await tts.SynthesizeAsync(new SpeechRequest(new string('a', 600), "mary"), default);
+        Assert.DoesNotContain("Auto", tts.Languages);
+        var short1 = await tts.SynthesizeAsync(new SpeechRequest("Hello there.", "mary", "English"), default);
+        var long1 = await tts.SynthesizeAsync(new SpeechRequest(new string('a', 600), "mary", "English"), default);
 
         Assert.Equal("RIFF", System.Text.Encoding.ASCII.GetString(short1.WavBytes, 0, 4));
         Assert.Equal("WAVE", System.Text.Encoding.ASCII.GetString(short1.WavBytes, 8, 4));
         Assert.Equal(44 + (int)(short1.Duration.TotalSeconds * 16_000) * 2, short1.WavBytes.Length);
         Assert.True(long1.Duration > short1.Duration);
         await Assert.ThrowsAsync<ArgumentException>(
-            () => tts.SynthesizeAsync(new SpeechRequest(new string('a', 5000), "mary"), default));
+            () => tts.SynthesizeAsync(new SpeechRequest(new string('a', 5000), "mary", "English"), default));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => tts.SynthesizeAsync(new SpeechRequest("Hello.", "mary", "Auto"), default));
     }
 
     private static ProtocolNarrativeWorker CreateWorker(ILlmProvider provider) =>

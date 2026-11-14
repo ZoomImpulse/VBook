@@ -23,7 +23,7 @@ public sealed class SqliteProjectStoreTests
             await store.SaveVoiceAssignmentAsync(project.Id, "narrator", "af_heart");
             var qwen = new SpeechVoiceProfile("Ryan", "English", "Speak calmly.");
             await store.SaveVoiceProfileAsync(project.Id, "Qwen3-TTS", "narrator", qwen);
-            await store.SaveVoiceProfileAsync(project.Id, "Kokoro", "narrator", new("af_heart", "Auto", ""));
+            await store.SaveVoiceProfileAsync(project.Id, "Kokoro", "narrator", new("af_heart", "", ""));
 
             var reopened = new SqliteProjectStore(databasePath);
             await reopened.InitializeAsync();
@@ -70,7 +70,8 @@ public sealed class SqliteProjectStoreTests
                     new ImportedChapter("chapter-2", "Next", "Second chapter.", SectionRole.BackMatter)
                 ],
                 VBook.Core.Narrative.NarrationMode.SingleNarrator,
-                structureAnalysis);
+                structureAnalysis,
+                "English");
 
             await store.SaveAsync(project);
 
@@ -92,6 +93,7 @@ public sealed class SqliteProjectStoreTests
             Assert.Equal(VBook.Core.Narrative.NarrationMode.SingleNarrator, loaded.NarrationMode);
             Assert.NotNull(loaded.StructureAnalysis);
             Assert.Equal("fantasy", loaded.StructureAnalysis.Genre);
+            Assert.Equal("English", loaded.DefaultLanguage);
             var savedSuggestion = Assert.Single(loaded.StructureAnalysis.Chapters);
             Assert.Equal("chapter-1", savedSuggestion.ChapterId);
             Assert.Equal(SectionRole.FrontMatter, savedSuggestion.Role);

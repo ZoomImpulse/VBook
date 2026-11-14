@@ -22,6 +22,9 @@ public sealed class QwenTtsProviderTests
         Assert.Equal(TimeSpan.FromMilliseconds(250), result.Duration);
         Assert.True(provider.SupportsVoiceInstructions);
         Assert.Contains("German", provider.Languages);
+        Assert.DoesNotContain("Auto", provider.Languages);
+        Assert.Equal("English", provider.GetVoiceNativeLanguage("Aiden"));
+        Assert.Equal("Chinese", provider.GetVoiceNativeLanguage("vivian"));
     }
 
     [Fact]
@@ -31,7 +34,7 @@ public sealed class QwenTtsProviderTests
         using var provider = new QwenTtsProvider(runner);
 
         await Assert.ThrowsAsync<ArgumentException>(() => provider.SynthesizeAsync(
-            new SpeechRequest("Hello.", "not-a-qwen-voice"),
+            new SpeechRequest("Hello.", "not-a-qwen-voice", "English"),
             CancellationToken.None));
 
         Assert.Null(runner.Request);

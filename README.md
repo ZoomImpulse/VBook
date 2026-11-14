@@ -41,8 +41,10 @@ never modified.
   needed and generates every non-skipped chapter in order; the queue reflects
   saved analysis and audio-job readiness. Export a completed book as M4B with
   chapter markers using FFmpeg. Qwen3-TTS is the default speech engine, with
-  optional Kokoro and Piper alternatives. Each speaker can have a voice,
-  language, and (with Qwen) expressive direction. After analyzing book structure,
+  optional Kokoro and Piper alternatives. Select a required book-wide speech
+  language; individual voices inherit it by default and can use a supported
+  language override. The selection is saved with the project. Each speaker can
+  have a voice and (with Qwen) expressive direction. After analyzing book structure,
   use **Suggest** to generate an editable direction tailored to the detected genre
   and narrator or character role. Mock tones are used only by tests and
   development code.

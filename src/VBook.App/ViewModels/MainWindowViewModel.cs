@@ -528,10 +528,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
     public async Task RefreshChapterQueueAsync(CancellationToken cancellationToken = default)
     {
+        var refreshVersion = Interlocked.Increment(ref _chapterQueueRefreshVersion);
         var projectId = _projectId;
         var chapters = Chapters.ToArray();
         if (projectId is null)
         {
+            if (refreshVersion != Volatile.Read(ref _chapterQueueRefreshVersion))
+            {
+                return;
+            }
+
             ChapterQueue.Clear();
             VisibleChapterQueue.Clear();
             OnPropertyChanged(nameof(NarratableChapterCount));
@@ -554,6 +560,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
             CurrentTtsProviderId,
             cancellationToken);
         var legacyAssignments = await _generationStore.LoadVoiceAssignmentsAsync(projectId.Value, cancellationToken);
+        var defaultLanguage = BookLanguage;
         var jobsByChapter = jobs
             .GroupBy(job => job.ChapterId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
@@ -569,13 +576,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                 var text = GetChapterText(chapter);
                 var mode = UseMultipleVoices ? NarrationMode.MultiVoice : NarrationMode.SingleNarrator;
                 var voiceProfiles = BuildVoiceProfiles(analysis, savedProfiles, legacyAssignments);
-                var generationFingerprint = analysis is null
+                var languageReady = _audioGeneration.TryResolveEffectiveVoiceProfiles(
+                    voiceProfiles,
+                    defaultLanguage,
+                    out var effectiveVoiceProfiles,
+                    out _);
+                var generationFingerprint = analysis is null || !languageReady
                     ? null
                     : AudioGenerationService.ComputeGenerationFingerprint(
                         _ttsProvider.Capabilities.Name,
                         analysis,
                         review,
-                        voiceProfiles);
+                        effectiveVoiceProfiles);
                 var status = GetChapterQueueStatus(
                     chapter,
                     analysis,
@@ -584,7 +596,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                     text,
                     generationFingerprint,
                     mode,
-                    _ttsProvider.VoiceIds.Count > 0);
+                    _ttsProvider.VoiceIds.Count > 0,
+                    languageReady);
                 return (chapter, status);
             }
             finally
@@ -592,6 +605,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                 concurrencyGate.Release();
             }
         }));
+
+        if (refreshVersion != Volatile.Read(ref _chapterQueueRefreshVersion) ||
+            _projectId != projectId)
+        {
+            return;
+        }
 
         ChapterQueue.Clear();
         foreach (var (chapter, status) in states)
@@ -640,7 +659,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         string text,
         string? generationFingerprint,
         NarrationMode mode,
-        bool speechEngineReady)
+        bool speechEngineReady,
+        bool languageReady)
     {
         if (chapter.Role == SectionRole.Skip)
         {
@@ -655,6 +675,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         if (analysis is null || !analysis.Matches(text, mode, chapter.Role))
         {
             return "Needs analysis";
+        }
+
+        if (!languageReady)
+        {
+            return "Select voice language";
         }
 
         var job = generationFingerprint is null
@@ -718,7 +743,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         string title,
         IReadOnlyList<ImportedChapter> chapters,
         NarrationMode? narrationMode = null,
-        BookStructureResult? structureAnalysis = null)
+        BookStructureResult? structureAnalysis = null,
+        string? defaultLanguage = null)
     {
         ClearGeneratedBookAudio();
         Book = new ImportedBook(title, chapters);
@@ -737,6 +763,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         _loadingProjectSettings = true;
         try
         {
+            BookLanguage = defaultLanguage ?? string.Empty;
             UseMultipleVoices = (narrationMode ??
                 NarrationModeDetector.Suggest(string.Join("\n\n", chapters.Select(c => c.Text))))
                 == NarrationMode.MultiVoice;
@@ -756,6 +783,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void ClearOpenProject()
     {
+        Interlocked.Increment(ref _chapterQueueRefreshVersion);
         CancelPendingAutosave();
         ClearGeneratedBookAudio();
         _projectId = null;
@@ -774,6 +802,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         ClearStructureSuggestions();
         ApplyStructureSuggestionsCommand.NotifyCanExecuteChanged();
         DetectedGenre = string.Empty;
+        BookLanguage = string.Empty;
         SelectedChapter = null;
         ChapterText = string.Empty;
         ApplyAnalysis(null);
@@ -795,7 +824,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         _projectId = project.Id;
         _projectCreatedAt = project.CreatedAt;
         _sourcePath = project.SourcePath;
-        ShowBook(project.Title, project.Chapters, project.NarrationMode, project.StructureAnalysis);
+        ShowBook(
+            project.Title,
+            project.Chapters,
+            project.NarrationMode,
+            project.StructureAnalysis,
+            project.DefaultLanguage);
         await RefreshChapterQueueAsync(cancellationToken);
         SelectedRecentProject = RecentProjects.FirstOrDefault(p => p.Id == project.Id);
         StatusMessage = $"Opened {project.Title}.";
@@ -819,7 +853,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                 DateTimeOffset.UtcNow,
                 Chapters.Select(chapter => chapter with { Text = GetChapterText(chapter) }).ToArray(),
                 UseMultipleVoices ? NarrationMode.MultiVoice : NarrationMode.SingleNarrator,
-                CreateCurrentStructureAnalysis());
+                CreateCurrentStructureAnalysis(),
+                BookLanguage);
             await _projectStore.SaveAsync(project, cancellationToken);
             StatusMessage = $"Saved {project.Title}.";
         }

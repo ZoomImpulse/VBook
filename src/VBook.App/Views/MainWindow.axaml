@@ -511,7 +511,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem Header="Preview &amp; voices">
-                        <Grid RowDefinitions="Auto,Auto,*" Margin="0,12,0,0">
+                        <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="0,12,0,0">
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Button
                                     Classes="accent"
@@ -535,7 +535,19 @@
                                     IsChecked="{Binding UseMultipleVoices}"
                                     ToolTip.Tip="Off: one narrator reads the whole book. Best for non-fiction, textbooks, memoir and essays. On: dialogue is attributed to characters." />
                             </StackPanel>
-                            <StackPanel Grid.Row="1" Spacing="4" Margin="0,12">
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="0,12">
+                                <TextBlock
+                                    VerticalAlignment="Center"
+                                    FontWeight="SemiBold"
+                                    Text="Book language (required)" />
+                                <ComboBox
+                                    MinWidth="180"
+                                    IsEnabled="{Binding CanEditNarrationContent}"
+                                    ItemsSource="{Binding TtsLanguages}"
+                                    ToolTip.Tip="Language selects what is spoken; the selected voice preset determines its native accent."
+                                    SelectedItem="{Binding BookLanguage}" />
+                            </StackPanel>
+                            <StackPanel Grid.Row="2" Spacing="4" Margin="0,0,0,12">
                                 <TextBlock
                                     AutomationProperties.LiveSetting="Polite"
                                     Text="{Binding ChapterAnalysisGuidance}"
@@ -555,7 +567,7 @@
                                     Text="The chapter text changed since the last analysis. Analyze again to refresh the segments."
                                     TextWrapping="Wrap" />
                             </StackPanel>
-                            <Grid Grid.Row="2" ColumnDefinitions="220,Auto,*">
+                            <Grid Grid.Row="3" ColumnDefinitions="220,Auto,*">
                                 <DockPanel>
                                     <TextBlock Classes="heading" DockPanel.Dock="Top" Margin="0,0,0,8" Text="Characters" />
                                     <ListBox AutomationProperties.Name="Characters" ItemsSource="{Binding Characters}">
@@ -664,20 +676,20 @@
                                     ItemsSource="{Binding VoiceAssignments}">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate x:DataType="vm:VoiceAssignmentItem">
-                                            <Grid ColumnDefinitions="*,150,130,220,Auto" ColumnSpacing="8" Margin="4">
+                                            <Grid ColumnDefinitions="*,150,150,220,Auto" ColumnSpacing="8" Margin="4">
                                                 <TextBlock
                                                     VerticalAlignment="Center"
                                                     Text="{Binding SpeakerName}" />
                                                 <ComboBox
                                                     Grid.Column="1"
                                                     IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}"
-                                                    ItemsSource="{Binding VoiceIds}"
-                                                    SelectedItem="{Binding VoiceId}" />
+                                                    ItemsSource="{Binding VoiceOptions}"
+                                                    SelectedItem="{Binding VoiceSelection}" />
                                                 <ComboBox
                                                     Grid.Column="2"
                                                     IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}"
-                                                    ItemsSource="{Binding Languages}"
-                                                    SelectedItem="{Binding Language}" />
+                                                    ItemsSource="{Binding LanguageOptions}"
+                                                    SelectedItem="{Binding LanguageSelection}" />
                                                 <TextBox
                                                     Grid.Column="3"
                                                     IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}"

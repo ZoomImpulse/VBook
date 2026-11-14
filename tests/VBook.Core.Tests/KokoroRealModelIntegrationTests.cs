@@ -16,7 +16,7 @@ public sealed class KokoroRealModelIntegrationTests
         using var provider = new KokoroTtsProvider(files);
 
         var result = await provider.SynthesizeAsync(
-            new SpeechRequest("This is a local Kokoro integration test.", "af_heart"),
+            new SpeechRequest("This is a local Kokoro integration test.", "af_heart", "English"),
             CancellationToken.None);
         var audio = WavPcm.ReadPcmAudio(result.WavBytes);
 

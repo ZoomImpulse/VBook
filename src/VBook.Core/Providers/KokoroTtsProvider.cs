@@ -14,20 +14,32 @@ public interface IKokoroSpeechEngine : IDisposable
 
 public interface IKokoroSpeechEngineFactory
 {
-    IKokoroSpeechEngine Create(KokoroModelFiles modelFiles);
+    IKokoroSpeechEngine Create(KokoroModelFiles modelFiles, string language);
 }
 
 public sealed class KokoroSpeechEngineFactory : IKokoroSpeechEngineFactory
 {
-    public IKokoroSpeechEngine Create(KokoroModelFiles modelFiles)
+    public IKokoroSpeechEngine Create(KokoroModelFiles modelFiles, string language)
     {
         ArgumentNullException.ThrowIfNull(modelFiles);
+        ArgumentException.ThrowIfNullOrWhiteSpace(language);
         var config = new OfflineTtsConfig();
         config.Model.Kokoro.Model = modelFiles.ModelPath;
         config.Model.Kokoro.Voices = modelFiles.VoicesPath;
         config.Model.Kokoro.Tokens = modelFiles.TokensPath;
         config.Model.Kokoro.Lexicon = modelFiles.LexiconPath;
-        config.Model.Kokoro.Lang = "en-us";
+        config.Model.Kokoro.Lang = language.ToLowerInvariant() switch
+        {
+            "english" => "en-us",
+            "spanish" => "es",
+            "french" => "fr-fr",
+            "hindi" => "hi",
+            "italian" => "it",
+            "japanese" => "ja",
+            "portuguese" => "pt-br",
+            "chinese" => "zh",
+            _ => throw new ArgumentException($"Kokoro language '{language}' is not supported.", nameof(language))
+        };
         config.Model.Provider = "cpu";
         config.Model.NumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 6);
         config.Model.Debug = 0;
@@ -124,7 +136,31 @@ public sealed class KokoroTtsProvider : ITtsProvider, IDisposable
             ["zm_yunyang"] = 52
         };
 
-    private readonly IKokoroSpeechEngine _engine;
+    private static readonly IReadOnlyDictionary<string, string> VoiceLanguages =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["af"] = "English",
+            ["am"] = "English",
+            ["bf"] = "English",
+            ["bm"] = "English",
+            ["ef"] = "Spanish",
+            ["em"] = "Spanish",
+            ["ff"] = "French",
+            ["hf"] = "Hindi",
+            ["hm"] = "Hindi",
+            ["if"] = "Italian",
+            ["im"] = "Italian",
+            ["jf"] = "Japanese",
+            ["jm"] = "Japanese",
+            ["pf"] = "Portuguese",
+            ["pm"] = "Portuguese",
+            ["zf"] = "Chinese",
+            ["zm"] = "Chinese"
+        };
+
+    private readonly KokoroModelFiles _modelFiles;
+    private readonly IKokoroSpeechEngineFactory _engineFactory;
+    private readonly Dictionary<string, IKokoroSpeechEngine> _engines = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _generationLock = new(1, 1);
 
     public KokoroTtsProvider(
@@ -132,11 +168,23 @@ public sealed class KokoroTtsProvider : ITtsProvider, IDisposable
         IKokoroSpeechEngineFactory? engineFactory = null)
     {
         ArgumentNullException.ThrowIfNull(modelFiles);
-        _engine = (engineFactory ?? new KokoroSpeechEngineFactory()).Create(modelFiles);
+        _modelFiles = modelFiles;
+        _engineFactory = engineFactory ?? new KokoroSpeechEngineFactory();
         VoiceIds = Speakers.Keys.Order(StringComparer.Ordinal).ToArray();
+        Languages = VoiceLanguages.Values
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     public IReadOnlyList<string> VoiceIds { get; }
+
+    public IReadOnlyList<string> Languages { get; }
+
+    public IReadOnlyList<string> GetLanguagesForVoice(string voiceId) =>
+        Speakers.ContainsKey(voiceId) && VoiceLanguages.TryGetValue(voiceId[..2], out var language)
+            ? [language]
+            : [];
 
     public ProviderCapabilities Capabilities { get; } =
         new("Kokoro-82M v1.0 int8 (local CPU)", IsMock: false, MaxContextCharacters: 900);
@@ -148,6 +196,7 @@ public sealed class KokoroTtsProvider : ITtsProvider, IDisposable
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Text);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.VoiceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Language);
         if (request.Text.Length > Capabilities.MaxContextCharacters)
         {
             throw new ArgumentException("The text exceeds Kokoro's request limit.", nameof(request));
@@ -158,11 +207,20 @@ public sealed class KokoroTtsProvider : ITtsProvider, IDisposable
             throw new ArgumentException($"Kokoro voice '{request.VoiceId}' is not available.", nameof(request));
         }
 
+        var voiceLanguage = VoiceLanguages[request.VoiceId[..2]];
+        if (!string.Equals(request.Language, voiceLanguage, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"Kokoro voice '{request.VoiceId}' requires the language '{voiceLanguage}'.",
+                nameof(request));
+        }
+
         await _generationLock.WaitAsync(cancellationToken);
         try
         {
+            var engine = GetOrCreateEngine(voiceLanguage);
             var generated = await Task.Run(
-                () => _engine.Synthesize(request.Text, speakerId, cancellationToken),
+                () => engine.Synthesize(request.Text, speakerId, cancellationToken),
                 cancellationToken);
             var wavBytes = CreatePcmWave(generated.Samples, generated.SampleRate);
             var audio = WavPcm.ReadPcmAudio(wavBytes);
@@ -182,8 +240,24 @@ public sealed class KokoroTtsProvider : ITtsProvider, IDisposable
 
     public void Dispose()
     {
-        _engine.Dispose();
+        foreach (var engine in _engines.Values)
+        {
+            engine.Dispose();
+        }
+
+        _engines.Clear();
         _generationLock.Dispose();
+    }
+
+    private IKokoroSpeechEngine GetOrCreateEngine(string language)
+    {
+        if (!_engines.TryGetValue(language, out var engine))
+        {
+            engine = _engineFactory.Create(_modelFiles, language);
+            _engines.Add(language, engine);
+        }
+
+        return engine;
     }
 
     private static byte[] CreatePcmWave(float[] samples, int sampleRate)

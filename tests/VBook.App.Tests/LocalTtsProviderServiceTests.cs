@@ -103,7 +103,7 @@ public sealed class LocalTtsProviderServiceTests
 
         provider.SelectProvider(LocalTtsProviderService.KokoroProviderId);
 
-        Assert.True(factory.WasUsed);
+        Assert.False(factory.WasUsed);
         Assert.Equal(53, provider.VoiceIds.Count);
         Assert.Equal("Kokoro-82M v1.0 int8 (local CPU)", provider.Capabilities.Name);
         Assert.Contains("\"SelectedProviderId\":\"Kokoro\"", File.ReadAllText(settingsPath));
@@ -113,7 +113,7 @@ public sealed class LocalTtsProviderServiceTests
     {
         public bool WasUsed { get; private set; }
 
-        public IKokoroSpeechEngine Create(KokoroModelFiles modelFiles)
+        public IKokoroSpeechEngine Create(KokoroModelFiles modelFiles, string language)
         {
             WasUsed = true;
             return new FakeSpeechEngine();

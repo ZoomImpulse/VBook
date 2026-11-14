@@ -32,7 +32,8 @@ public sealed class AudioGenerationService
         CancellationToken cancellationToken,
         SectionRole sectionRole = SectionRole.Body,
         SpeechEditReview? speechReview = null,
-        IReadOnlyDictionary<string, SpeechVoiceProfile>? voiceProfiles = null)
+        IReadOnlyDictionary<string, SpeechVoiceProfile>? voiceProfiles = null,
+        string defaultLanguage = "")
     {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(analysis);
@@ -58,7 +59,9 @@ public sealed class AudioGenerationService
             throw new InvalidOperationException("The configured TTS provider does not expose any voices.");
         }
 
-        voiceProfiles = ResolveVoiceProfiles(analysis, voiceAssignments, voiceProfiles);
+        voiceProfiles = ResolveEffectiveVoiceProfiles(
+            ResolveVoiceProfiles(analysis, voiceAssignments, voiceProfiles),
+            defaultLanguage);
         var knownSpeakerIds = analysis.Characters.Select(character => character.Id)
             .ToHashSet(StringComparer.Ordinal);
         AnalysisValidator.EnsureValid(text, knownSpeakerIds, analysis.Segments);
@@ -89,7 +92,7 @@ public sealed class AudioGenerationService
                 var assignmentKey = segment.SpeakerId ?? "narrator";
                 var legacyVoiceId = voiceAssignments.GetValueOrDefault(assignmentKey, _provider.VoiceIds[0]);
                 var profile = voiceProfiles?.GetValueOrDefault(assignmentKey)
-                    ?? new SpeechVoiceProfile(legacyVoiceId, "Auto", string.Empty);
+                    ?? new SpeechVoiceProfile(legacyVoiceId, string.Empty, string.Empty);
                 var voiceId = profile.VoiceId;
                 if (!_provider.VoiceIds.Contains(voiceId, StringComparer.Ordinal))
                 {
@@ -256,22 +259,83 @@ public sealed class AudioGenerationService
                     _provider.VoiceIds.Contains(legacyVoice, StringComparer.Ordinal)
                         ? legacyVoice
                         : defaultVoice,
-                    "Auto",
+                    string.Empty,
                     string.Empty);
             if (!_provider.VoiceIds.Contains(profile.VoiceId, StringComparer.Ordinal))
             {
                 profile = profile with { VoiceId = defaultVoice };
             }
 
-            if (!_provider.Languages.Contains(profile.Language, StringComparer.OrdinalIgnoreCase))
+            if (!_provider.GetLanguagesForVoice(profile.VoiceId)
+                    .Contains(profile.Language, StringComparer.OrdinalIgnoreCase))
             {
-                profile = profile with { Language = "Auto" };
+                profile = profile with { Language = string.Empty };
             }
 
             profiles[speakerId] = profile;
         }
 
         return profiles;
+    }
+
+    public IReadOnlyDictionary<string, SpeechVoiceProfile> ResolveEffectiveVoiceProfiles(
+        IReadOnlyDictionary<string, SpeechVoiceProfile> voiceProfiles,
+        string defaultLanguage)
+    {
+        if (!TryResolveEffectiveVoiceProfiles(voiceProfiles, defaultLanguage, out var profiles, out var error))
+        {
+            throw new InvalidOperationException(error);
+        }
+
+        return profiles;
+    }
+
+    public bool TryResolveEffectiveVoiceProfiles(
+        IReadOnlyDictionary<string, SpeechVoiceProfile> voiceProfiles,
+        string defaultLanguage,
+        out IReadOnlyDictionary<string, SpeechVoiceProfile> effectiveProfiles,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(voiceProfiles);
+        if (string.IsNullOrWhiteSpace(defaultLanguage) ||
+            !_provider.Languages.Contains(defaultLanguage, StringComparer.OrdinalIgnoreCase))
+        {
+            effectiveProfiles = new Dictionary<string, SpeechVoiceProfile>(StringComparer.Ordinal);
+            error = "Select a supported book language before generating audio.";
+            return false;
+        }
+
+        var profiles = new Dictionary<string, SpeechVoiceProfile>(voiceProfiles, StringComparer.Ordinal);
+        foreach (var speakerId in profiles.Keys.ToArray())
+        {
+            var profile = profiles[speakerId];
+            var language = string.IsNullOrWhiteSpace(profile.Language)
+                ? defaultLanguage
+                : profile.Language;
+            if (string.IsNullOrWhiteSpace(language))
+            {
+                effectiveProfiles = profiles;
+                error = $"Select a language for the '{speakerId}' voice before generating audio.";
+                return false;
+            }
+
+            var supportedLanguage = _provider.GetLanguagesForVoice(profile.VoiceId)
+                .FirstOrDefault(candidate =>
+                    string.Equals(candidate, language, StringComparison.OrdinalIgnoreCase));
+            if (supportedLanguage is null)
+            {
+                effectiveProfiles = profiles;
+                error =
+                    $"Voice '{profile.VoiceId}' does not support language '{language}'. Select a supported language for this voice or change the voice.";
+                return false;
+            }
+
+            profiles[speakerId] = profile with { Language = supportedLanguage };
+        }
+
+        effectiveProfiles = profiles;
+        error = null;
+        return true;
     }
 
     private static string ComputeProfileHash(SpeechVoiceProfile profile) =>
