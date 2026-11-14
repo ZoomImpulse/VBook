@@ -3,9 +3,8 @@ using VBook.Core.Providers;
 namespace VBook.Core.Narrative;
 
 /// <summary>
-/// Enforces the provider context budget by chunking the chapter, carries known
-/// characters forward between chunks, and validates the merged result before it
-/// can be stored or voiced.
+/// Runs one combined narrative and speech-edit analysis per bounded chapter chunk,
+/// then validates and merges the results against the original source text.
 /// </summary>
 public sealed class ChapterAnalyzer
 {
@@ -22,14 +21,6 @@ public sealed class ChapterAnalyzer
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (request.Mode == NarrationMode.SingleNarrator)
-        {
-            var paragraphs = SingleNarratorSegmenter.Segment(request.Text);
-            AnalysisValidator.EnsureValid(request.Text, [], paragraphs);
-            progress?.Report(new AnalysisProgress(1, "Analysis complete."));
-            return new ChapterAnalysis(request.ChapterId, TextFingerprint.Compute(request.Text), [], paragraphs);
-        }
-
         var budget = _provider.Capabilities.MaxContextCharacters;
         if (budget < 2)
         {
@@ -44,6 +35,8 @@ public sealed class ChapterAnalyzer
         }
 
         var segments = new List<NarrativeSegment>();
+        var suggestions = new List<SpeechEditSuggestion>();
+        var warnings = new List<string>();
         var usedSpeakerIds = new HashSet<string>(StringComparer.Ordinal);
         for (var chunkIndex = 0; chunkIndex < chunks.Count; chunkIndex++)
         {
@@ -51,11 +44,12 @@ public sealed class ChapterAnalyzer
             var chunk = chunks[chunkIndex];
             progress?.Report(new AnalysisProgress(
                 (double)chunkIndex / chunks.Count,
-                $"Analyzing part {chunkIndex + 1} of {chunks.Count}…"));
+                $"Analyzing narrative and spoken wording, part {chunkIndex + 1} of {chunks.Count}…"));
 
             var result = await _provider.AnalyzeAsync(
-                new AnalysisRequest(request.ChapterId, chunk.Text, [.. cast.Values]),
+                new AnalysisRequest(request.ChapterId, chunk.Text, [.. cast.Values], request.Mode, request.SectionRole),
                 cancellationToken);
+            warnings.AddRange(result.Warnings ?? []);
 
             foreach (var character in result.Characters)
             {
@@ -73,15 +67,94 @@ public sealed class ChapterAnalyzer
                     usedSpeakerIds.Add(segment.SpeakerId);
                 }
             }
+
+            var editCursor = 0;
+            foreach (var edit in result.SpeechEdits ?? [])
+            {
+                if (string.IsNullOrEmpty(edit.OriginalText) ||
+                    edit.ReplacementText is null ||
+                    string.IsNullOrWhiteSpace(edit.Rationale))
+                {
+                    throw new InvalidDataException("The model returned an incomplete spoken-wording suggestion.");
+                }
+
+                var localStart = chunk.Text.IndexOf(edit.OriginalText, editCursor, StringComparison.Ordinal);
+                if (localStart < 0)
+                {
+                    throw new InvalidDataException(
+                        "A spoken-wording suggestion did not match the source text in order.");
+                }
+
+                suggestions.Add(new SpeechEditSuggestion(
+                    Guid.NewGuid(),
+                    chunk.Start + localStart,
+                    edit.OriginalText.Length,
+                    edit.OriginalText,
+                    edit.ReplacementText,
+                    edit.Rationale));
+                editCursor = localStart + edit.OriginalText.Length;
+            }
         }
 
         AnalysisValidator.EnsureValid(request.Text, cast.Keys.ToHashSet(StringComparer.Ordinal), segments);
-        progress?.Report(new AnalysisProgress(1, "Analysis complete."));
+        if (request.Mode == NarrationMode.SingleNarrator)
+        {
+            segments = [.. SingleNarratorSegmenter.Segment(request.Text)];
+        }
+
+        suggestions = [.. ValidateSpeechSuggestions(request.Text, segments, suggestions, warnings)];
+        progress?.Report(new AnalysisProgress(1, "Narrative and spoken-wording analysis complete."));
         return new ChapterAnalysis(
             request.ChapterId,
             TextFingerprint.Compute(request.Text),
-            cast.Values.Where(character => usedSpeakerIds.Contains(character.Id)).ToArray(),
-            segments);
+            request.Mode == NarrationMode.SingleNarrator
+                ? []
+                : cast.Values.Where(character => usedSpeakerIds.Contains(character.Id)).ToArray(),
+            segments,
+            request.Mode,
+            request.SectionRole,
+            suggestions,
+            warnings);
+    }
+
+    private static IReadOnlyList<SpeechEditSuggestion> ValidateSpeechSuggestions(
+        string source,
+        IReadOnlyList<NarrativeSegment> segments,
+        IReadOnlyList<SpeechEditSuggestion> suggestions,
+        ICollection<string> warnings)
+    {
+        var ordered = suggestions.OrderBy(suggestion => suggestion.Start).ToArray();
+        var valid = new List<SpeechEditSuggestion>();
+        var cursor = 0;
+        foreach (var suggestion in ordered)
+        {
+            if (suggestion.Start < cursor ||
+                suggestion.Start < 0 ||
+                suggestion.Length <= 0 ||
+                suggestion.Start > source.Length - suggestion.Length ||
+                !string.Equals(
+                    source.Substring(suggestion.Start, suggestion.Length),
+                    suggestion.OriginalText,
+                    StringComparison.Ordinal))
+            {
+                warnings.Add("A spoken-wording suggestion overlapping or not matching the source was ignored.");
+                continue;
+            }
+
+            var containingSegments = segments.Where(segment =>
+                suggestion.Start >= segment.Start &&
+                suggestion.Start + suggestion.Length <= segment.Start + segment.Length).ToArray();
+            if (containingSegments.Length != 1 || containingSegments[0].Kind != SegmentKind.Narration)
+            {
+                warnings.Add("A spoken-wording suggestion outside a single narration segment was ignored.");
+                continue;
+            }
+
+            cursor = suggestion.Start + suggestion.Length;
+            valid.Add(suggestion);
+        }
+
+        return valid;
     }
 
     private static Character MergeCharacter(Character existing, Character incoming)

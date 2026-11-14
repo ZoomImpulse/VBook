@@ -66,6 +66,57 @@ public sealed class EpubImporterTests
     }
 
     [Fact]
+    public void Import_SkipsEndorsementsAndPublisherBookPromotions()
+    {
+        using var stream = CreateEpub(
+            """
+            <package xmlns="http://www.idpf.org/2007/opf">
+              <manifest>
+                <item id="endorsements" href="endorsements.xhtml" media-type="application/xhtml+xml"/>
+                <item id="other-books" href="other-books.xhtml" media-type="application/xhtml+xml"/>
+                <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine><itemref idref="endorsements"/><itemref idref="other-books"/><itemref idref="chapter"/></spine>
+            </package>
+            """,
+            ("endorsements.xhtml", "<html><body><h1>Endorsements</h1><p>Highly recommended.</p></body></html>"),
+            ("other-books.xhtml", "<html><body><h1>Other Crossway Books</h1><p>More titles.</p></body></html>"),
+            ("chapter.xhtml", "<html><body><h1>Chapter One</h1><p>Main content.</p></body></html>"));
+
+        var book = new EpubImporter().Import(stream);
+
+        Assert.Equal("Chapter One", Assert.Single(book.Chapters).Title);
+        Assert.Equal(new[] { "endorsements", "other-books" }, book.SkippedSections.Select(section => section.Id));
+        Assert.All(book.SkippedSections, section => Assert.Equal("promotional page", section.Reason));
+    }
+
+    [Fact]
+    public void Import_MergesTitleOnlyPartHeadingsIntoFollowingChapter()
+    {
+        using var stream = CreateEpub(
+            """
+            <package xmlns="http://www.idpf.org/2007/opf">
+              <manifest>
+                <item id="part" href="part.xhtml" media-type="application/xhtml+xml"/>
+                <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine><itemref idref="part"/><itemref idref="chapter"/></spine>
+            </package>
+            """,
+            ("part.xhtml", "<html><body><h1>Part 1 Architecture of the Revolution</h1></body></html>"),
+            ("chapter.xhtml", "<html><body><h1>1 Reimagining the Self</h1><p>Chapter text.</p></body></html>"));
+
+        var book = new EpubImporter().Import(stream);
+
+        var chapter = Assert.Single(book.Chapters);
+        Assert.Equal("Part 1 Architecture of the Revolution — 1 Reimagining the Self", chapter.Title);
+        Assert.Equal(
+            "Part 1 Architecture of the Revolution\n\n1 Reimagining the Self\n\nChapter text.",
+            chapter.Text);
+        Assert.Empty(book.SkippedSections);
+    }
+
+    [Fact]
     public void Import_SkipsSectionsByEpubType()
     {
         using var stream = CreateEpub(

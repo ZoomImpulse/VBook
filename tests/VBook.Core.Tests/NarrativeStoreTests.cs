@@ -44,6 +44,7 @@ public sealed class NarrativeStoreTests
 
             Assert.NotNull(loaded);
             Assert.Equal("HASH1B", loaded.SourceHash);
+            Assert.Equal(NarrationMode.MultiVoice, loaded.Mode);
             Assert.Equal(
                 [(0, SegmentKind.Narration, (string?)null, 0, 5), (1, SegmentKind.Dialogue, "mary", 5, 7)],
                 loaded.Segments.Select(s => (s.Index, s.Kind, s.SpeakerId, s.Start, s.Length)));

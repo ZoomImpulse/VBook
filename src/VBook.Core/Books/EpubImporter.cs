@@ -88,6 +88,7 @@ public sealed class EpubImporter : IBookImporter
         var tocTitles = ReadTocTitles(archive, package, manifest, packageDirectory);
         var chapters = new List<ImportedChapter>();
         var skipped = new List<SkippedSection>();
+        var pendingPartHeadings = new List<(string Id, string Title, string Text)>();
         foreach (var id in spine)
         {
             if (!manifest.TryGetValue(id!, out var item))
@@ -115,6 +116,12 @@ public sealed class EpubImporter : IBookImporter
             guideTypes.TryGetValue(contentPath, out var guideType);
             var chapterTitle = FirstNonEmpty(tocTitle, heading, item.Title, $"Chapter {chapters.Count + 1}");
 
+            if (SectionClassifier.IsPartHeading(chapterTitle, text))
+            {
+                pendingPartHeadings.Add((id!, chapterTitle, text));
+                continue;
+            }
+
             var classification = SectionClassifier.Classify(
                 document, FirstNonEmpty(tocTitle, heading, item.Title, string.Empty), item.Properties, guideType, text);
             if (classification.Role == SectionRole.Skip)
@@ -123,7 +130,21 @@ public sealed class EpubImporter : IBookImporter
                 continue;
             }
 
+            if (pendingPartHeadings.Count > 0)
+            {
+                chapterTitle = string.Join(" — ", pendingPartHeadings.Select(part => part.Title).Append(chapterTitle));
+                text = string.Join(
+                    "\n\n",
+                    pendingPartHeadings.Select(part => part.Text).Append(text));
+                pendingPartHeadings.Clear();
+            }
+
             chapters.Add(new ImportedChapter(id!, chapterTitle, text, classification.Role));
+        }
+
+        foreach (var part in pendingPartHeadings)
+        {
+            skipped.Add(new SkippedSection(part.Id, part.Title, "structural part heading without following chapter"));
         }
 
         if (chapters.Count == 0)

@@ -68,7 +68,8 @@ public sealed class LocalWorkerHost : IWorkerTransport
                     var progress = new InlineProgress(report =>
                         writer.TryWrite(new ProgressEvent(request.RequestId, report.Fraction, report.Message)));
                     var analysis = await _analyzer.AnalyzeAsync(
-                        new AnalysisRequest(analyze.ChapterId, analyze.Text, analyze.KnownCharacters, analyze.Mode),
+                        new AnalysisRequest(
+                            analyze.ChapterId, analyze.Text, analyze.KnownCharacters, analyze.Mode, analyze.SectionRole),
                         progress,
                         cancellationToken);
                     writer.TryWrite(new AnalysisCompletedEvent(request.RequestId, analysis));
@@ -121,7 +122,8 @@ public sealed class ProtocolNarrativeWorker : INarrativeWorker
     {
         ArgumentNullException.ThrowIfNull(request);
         var requestId = Guid.NewGuid();
-        var message = new AnalyzeChapterRequest(requestId, request.ChapterId, request.Text, request.KnownCharacters, request.Mode);
+        var message = new AnalyzeChapterRequest(
+            requestId, request.ChapterId, request.Text, request.KnownCharacters, request.Mode, request.SectionRole);
         await foreach (var workerEvent in _transport.SendAsync(message, cancellationToken)
             .WithCancellation(cancellationToken))
         {

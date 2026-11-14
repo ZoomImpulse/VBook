@@ -7,51 +7,98 @@
     xmlns:vm="using:VBook.App.ViewModels"
     x:DataType="vm:MainWindowViewModel"
     Title="{Binding WindowTitle}"
-    Width="1100"
-    Height="720"
-    MinWidth="720"
-    MinHeight="480"
+    Width="1320"
+    Height="840"
+    MinWidth="960"
+    MinHeight="620"
     WindowStartupLocation="CenterScreen">
     <DockPanel>
         <Border
             Classes="panel"
             DockPanel.Dock="Bottom"
             BorderThickness="0,1,0,0"
-            Padding="16,8">
-            <TextBlock
-                Classes="secondary"
-                AutomationProperties.LiveSetting="Polite"
-                Text="{Binding StatusMessage}"
-                TextTrimming="CharacterEllipsis" />
+            Padding="20,10">
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                <Ellipse
+                    Width="8"
+                    Height="8"
+                    Fill="{DynamicResource AppAccentBrush}"
+                    VerticalAlignment="Center" />
+                <TextBlock
+                    Grid.Column="1"
+                    Classes="secondary"
+                    AutomationProperties.LiveSetting="Polite"
+                    Text="{Binding StatusMessage}"
+                    TextTrimming="CharacterEllipsis" />
+            </Grid>
         </Border>
 
         <Border
-            Classes="panel"
+            Classes="card"
             DockPanel.Dock="Top"
-            Padding="16,10"
+            Margin="20,12,20,0"
+            Padding="14"
             IsVisible="{Binding IsDeleteConfirmationVisible}">
-            <StackPanel Orientation="Horizontal" Spacing="10">
-                <TextBlock
-                    VerticalAlignment="Center"
-                    Text="{Binding ProjectPendingDelete.Title, StringFormat='Permanently delete {0} from this library? The EPUB file will not be deleted.'}"
-                    TextWrapping="Wrap" />
+            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+                <StackPanel Spacing="2">
+                    <TextBlock FontWeight="SemiBold" Text="Delete project?" />
+                    <TextBlock
+                        Classes="secondary"
+                        Text="{Binding ProjectPendingDelete.Title, StringFormat='“{0}” will be removed from this library. Its EPUB file will not be deleted.'}"
+                        TextWrapping="Wrap" />
+                </StackPanel>
                 <Button
+                    Grid.Column="1"
                     Content="Delete project"
                     Command="{Binding ConfirmDeleteProjectCommand}" />
-                <Button Content="Cancel" Command="{Binding CancelDeleteProjectCommand}" />
-            </StackPanel>
+                <Button Grid.Column="2" Content="Cancel" Command="{Binding CancelDeleteProjectCommand}" />
+            </Grid>
+        </Border>
+
+        <Border
+            Classes="card"
+            DockPanel.Dock="Top"
+            Margin="20,12,20,0"
+            Padding="12"
+            IsVisible="{Binding HasThemePreferenceWarning}">
+            <TextBlock Text="{Binding ThemePreferenceWarning}" TextWrapping="Wrap" />
         </Border>
 
         <Grid
             DockPanel.Dock="Top"
             ColumnDefinitions="*,Auto"
-            ColumnSpacing="16"
-            Margin="{DynamicResource PagePadding}">
-            <StackPanel Spacing="4">
-                <TextBlock Classes="title" Text="{Binding Book.Title, FallbackValue='Local Audiobook Studio'}" />
-                <TextBlock Classes="secondary" Text="Import and prepare a book for local narration" />
+            RowDefinitions="Auto,Auto"
+            ColumnSpacing="24"
+            RowSpacing="12"
+            Margin="24,18,24,16">
+            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <Border
+                    Width="42"
+                    Height="42"
+                    CornerRadius="12"
+                    Background="{DynamicResource AppAccentBrush}">
+                    <TextBlock
+                        Text="V"
+                        FontSize="22"
+                        FontWeight="Bold"
+                        Foreground="White"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center" />
+                </Border>
+                <StackPanel VerticalAlignment="Center" Spacing="2">
+                    <TextBlock Classes="title" Text="{Binding Book.Title, FallbackValue='VBook Studio'}" />
+                    <TextBlock Classes="secondary" Text="A focused workspace for local audiobook production" />
+                </StackPanel>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <ComboBox
+                    Width="105"
+                    AutomationProperties.Name="Color theme"
+                    ToolTip.Tip="Choose System, Light, or Dark appearance"
+                    ItemsSource="{Binding ThemeModes}"
+                    SelectedItem="{Binding ThemeMode}" />
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                 <ComboBox
                     Width="220"
                     PlaceholderText="Recent projects"
@@ -65,44 +112,405 @@
                     </ComboBox.ItemTemplate>
                 </ComboBox>
                 <Button Content="Open" Command="{Binding OpenRecentProjectCommand}" />
-                <Button Content="Delete" Command="{Binding DeleteRecentProjectCommand}" ToolTip.Tip="Delete selected project" />
                 <Button Content="Save" Command="{Binding SaveProjectCommand}" HotKey="Ctrl+S" ToolTip.Tip="Save project (Ctrl+S)" />
                 <Button Content="Import EPUB…" Classes="accent" Command="{Binding ImportEpubCommand}" HotKey="Ctrl+O" ToolTip.Tip="Import EPUB (Ctrl+O)" />
             </StackPanel>
         </Grid>
 
-        <Grid ColumnDefinitions="280,Auto,*">
-            <Border Classes="panel" BorderThickness="0,1,0,0" Padding="{DynamicResource PanelPadding}">
+        <Grid ColumnDefinitions="260,Auto,*" Margin="20,0,20,18">
+            <Border Classes="sidebar" BorderThickness="1" CornerRadius="14" Padding="16">
                 <DockPanel>
-                    <TextBlock Classes="heading" DockPanel.Dock="Top" Margin="0,0,0,12" Text="Chapters" />
-                    <ListBox
-                        AutomationProperties.Name="Chapters"
-                        ItemsSource="{Binding Chapters}"
-                        SelectedItem="{Binding SelectedChapter}">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate x:DataType="books:ImportedChapter">
-                                <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" Margin="0,4" />
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
+                    <StackPanel DockPanel.Dock="Top" Spacing="10" Margin="0,0,0,12">
+                        <TextBlock Classes="heading" Text="Production queue" />
+                        <TextBlock
+                            Classes="secondary"
+                            Text="Select a chapter below to review and produce its audio."
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            Classes="secondary"
+                            Text="{Binding BookReadinessSummary}"
+                            TextWrapping="Wrap" />
+                        <TextBox
+                            AutomationProperties.Name="Search production queue"
+                            PlaceholderText="Find a chapter…"
+                            Text="{Binding QueueSearchText, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button
+                            Classes="danger"
+                            Content="Delete selected project"
+                            Command="{Binding DeleteRecentProjectCommand}"
+                            ToolTip.Tip="Remove the selected project from this library" />
+                        <ProgressBar Maximum="1" Value="{Binding BookAudioReadiness}" />
+                    </StackPanel>
+                    <Grid>
+                        <ListBox
+                            AutomationProperties.Name="Production queue"
+                            IsEnabled="{Binding CanSelectChapter}"
+                            ItemsSource="{Binding VisibleChapterQueue}"
+                            SelectedItem="{Binding SelectedQueueItem}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ChapterQueueItem">
+                                    <StackPanel Margin="2,7" Spacing="5">
+                                        <TextBlock
+                                            FontWeight="SemiBold"
+                                            Text="{Binding Title}"
+                                            TextTrimming="CharacterEllipsis" />
+                                        <Grid ColumnDefinitions="*,Auto">
+                                            <Border Classes="queue-status" HorizontalAlignment="Left">
+                                                <TextBlock
+                                                    Classes="queue-status-text"
+                                                    Text="{Binding Status}"
+                                                    TextTrimming="CharacterEllipsis" />
+                                            </Border>
+                                            <TextBlock
+                                                Grid.Column="1"
+                                                Classes="secondary"
+                                                FontSize="10"
+                                                Text="{Binding Role}" />
+                                        </Grid>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <Border
+                            Classes="card"
+                            IsVisible="{Binding IsQueueSearchEmpty}"
+                            Margin="12"
+                            Padding="16"
+                            VerticalAlignment="Top">
+                            <TextBlock
+                                Classes="secondary"
+                                Text="No chapters match this search."
+                                TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
                 </DockPanel>
             </Border>
-            <GridSplitter Grid.Column="1" Width="4" ResizeDirection="Columns" />
-            <DockPanel Grid.Column="2" Margin="28">
-                <TextBlock Classes="heading" DockPanel.Dock="Top" Margin="0,0,0,12" Text="{Binding ChapterHeading}" />
-                <TabControl>
-                    <TabItem Header="Text">
+            <GridSplitter Grid.Column="1" Width="8" ResizeDirection="Columns" />
+            <Grid Grid.Column="2" Margin="20,0,0,0">
+              <DockPanel IsVisible="{Binding HasChapter}">
+                <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="4,0,4,14">
+                    <StackPanel Spacing="3">
+                        <TextBlock Classes="secondary" Text="SELECTED CHAPTER" />
+                        <TextBlock Classes="heading" Text="{Binding ChapterHeading}" />
+                        <TextBlock Classes="secondary" Text="Selected from the production queue · source stays unchanged until you edit it." />
+                    </StackPanel>
+                    <TextBlock
+                        Grid.Column="1"
+                        Classes="secondary"
+                        VerticalAlignment="Center"
+                        Text="{Binding SelectedChapter.Role, StringFormat='SECTION  ·  {0}'}" />
+                </Grid>
+                <Border Classes="card" Padding="12">
+                  <Grid RowDefinitions="Auto,*" RowSpacing="12">
+                    <Border
+                        Classes="workflow-guide"
+                        Padding="14"
+                        CornerRadius="10">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel Spacing="6">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <TextBlock
+                                        Classes="workflow-progress-label"
+                                        Text="{Binding WorkflowProgressLabel}" />
+                                    <TextBlock
+                                        Classes="heading"
+                                        Text="{Binding WorkflowStepTitle}" />
+                                </StackPanel>
+                                <TextBlock
+                                    Classes="secondary"
+                                    Text="{Binding WorkflowStepDescription}"
+                                    TextWrapping="Wrap" />
+                                <ProgressBar
+                                    Maximum="1"
+                                    AutomationProperties.Name="Workflow progress"
+                                    Value="{Binding WorkflowProgress}" />
+                            </StackPanel>
+                            <Button
+                                Grid.Column="1"
+                                Classes="accent"
+                                VerticalAlignment="Center"
+                                Content="{Binding ContinueWorkflowLabel}"
+                                Command="{Binding ContinueWorkflowCommand}"
+                                IsVisible="{Binding CanContinueWorkflow}" />
+                        </Grid>
+                    </Border>
+                    <TabControl
+                        Grid.Row="1"
+                        SelectedIndex="{Binding SelectedWorkflowStepIndex, Mode=TwoWay}">
+                    <TabItem Header="01  Prepare">
                         <TextBox
                             Margin="0,12,0,0"
                             AcceptsReturn="True"
                             AutomationProperties.Name="Chapter text"
-                            IsEnabled="{Binding HasChapter}"
+                            IsEnabled="{Binding CanEditNarrationContent}"
                             PlaceholderText="Imported chapter text will appear here."
                             Text="{Binding ChapterText}"
                             TextWrapping="Wrap"
                             VerticalContentAlignment="Top" />
                     </TabItem>
-                    <TabItem Header="Narrative">
+                    <TabItem Header="02  Structure">
+                        <Grid RowDefinitions="Auto,Auto,*" Margin="0,12,0,0">
+                            <WrapPanel>
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Classes="accent"
+                                    Content="Analyze book structure"
+                                    Command="{Binding AnalyzeBookStructureCommand}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Cancel"
+                                    Command="{Binding AnalyzeBookStructureCancelCommand}"
+                                    IsVisible="{Binding IsAnalyzingStructure}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Apply reviewed roles"
+                                    Command="{Binding ApplyStructureSuggestionsCommand}" />
+                                <TextBlock
+                                    Margin="0,0,8,8"
+                                    Classes="secondary"
+                                    VerticalAlignment="Center"
+                                    Text="{Binding AnalyzerName, StringFormat='Local model: {0}'}" />
+                            </WrapPanel>
+                            <StackPanel Grid.Row="1" Spacing="4" Margin="0,8,0,12">
+                                <TextBlock
+                                    Classes="heading"
+                                    Text="{Binding DetectedGenre, StringFormat='Suggested book type: {0}'}"
+                                    IsVisible="{Binding HasDetectedGenre}" />
+                                <ProgressBar
+                                    Maximum="1"
+                                    AutomationProperties.Name="Book structure analysis progress"
+                                    IsVisible="{Binding IsAnalyzingStructure}"
+                                    Value="{Binding StructureProgress}" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding StructureStatus}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                            <ListBox
+                                Grid.Row="2"
+                                AutomationProperties.Name="Suggested book structure"
+                                ItemsSource="{Binding StructureSuggestions}"
+                                IsVisible="{Binding HasStructureSuggestions}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:StructureSuggestionItem">
+                                        <Grid
+                                            ColumnDefinitions="*,Auto,170,2*"
+                                            ColumnSpacing="12"
+                                            Margin="4">
+                                            <TextBlock
+                                                VerticalAlignment="Center"
+                                                Text="{Binding Title}"
+                                                TextTrimming="CharacterEllipsis" />
+                                            <TextBlock
+                                                Grid.Column="1"
+                                                Classes="secondary"
+                                                VerticalAlignment="Center"
+                                                Text="{Binding ConfidenceLabel}" />
+                                            <ComboBox
+                                                Grid.Column="2"
+                                                ItemsSource="{Binding RoleChoices}"
+                                                SelectedItem="{Binding SuggestedRole}" />
+                                            <TextBlock
+                                                Grid.Column="3"
+                                                Classes="secondary"
+                                                VerticalAlignment="Center"
+                                                Text="{Binding Rationale}"
+                                                TextWrapping="Wrap" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Border
+                                Grid.Row="2"
+                                Classes="card"
+                                IsVisible="{Binding HasNoStructureSuggestions}"
+                                Padding="20"
+                                VerticalAlignment="Center">
+                                <StackPanel Spacing="6">
+                                    <TextBlock FontWeight="SemiBold" Text="No structure review yet" />
+                                    <TextBlock
+                                        Classes="secondary"
+                                        Text="Analyze the book to get editable chapter-role suggestions. Nothing is applied until you review and choose Apply."
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="03  Produce">
+                      <Grid RowDefinitions="Auto,*" RowSpacing="12">
+                        <Border Classes="workflow-guide" Padding="12" CornerRadius="10">
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                                <StackPanel Spacing="6" VerticalAlignment="Center">
+                                    <TextBlock Classes="heading" Text="Speech engine" />
+                                    <TextBlock
+                                        Classes="secondary"
+                                        Text="{Binding TtsProviderDescription}"
+                                        TextWrapping="Wrap" />
+                                    <ProgressBar
+                                        Maximum="1"
+                                        AutomationProperties.Name="Kokoro model download progress"
+                                        IsVisible="{Binding IsDownloadingKokoro}"
+                                        Value="{Binding TtsModelDownloadProgress}" />
+                                    <TextBlock
+                                        Classes="secondary"
+                                        AutomationProperties.LiveSetting="Polite"
+                                        IsVisible="{Binding IsDownloadingKokoro}"
+                                        Text="{Binding TtsModelDownloadStatus}"
+                                        TextWrapping="Wrap" />
+                                    <ProgressBar
+                                        Maximum="1"
+                                        AutomationProperties.Name="Qwen local setup progress"
+                                        IsVisible="{Binding IsSettingUpQwen}"
+                                        Value="{Binding QwenSetupProgress}" />
+                                    <TextBlock
+                                        Classes="secondary"
+                                        AutomationProperties.LiveSetting="Polite"
+                                        IsVisible="{Binding IsSettingUpQwen}"
+                                        Text="{Binding QwenSetupStatus}"
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Center">
+                                    <ComboBox
+                                        Width="170"
+                                        AutomationProperties.Name="Speech engine"
+                                        ItemsSource="{Binding TtsProviderOptions}"
+                                        SelectedItem="{Binding SelectedTtsProvider}"
+                                        IsEnabled="{Binding CanChangeTtsProvider}" />
+                                    <Button
+                                        Classes="accent"
+                                        Content="Download Kokoro model"
+                                        IsVisible="{Binding IsKokoroSetupRequired}"
+                                        Command="{Binding DownloadKokoroCommand}" />
+                                    <Button
+                                        Classes="accent"
+                                        Content="Set up Qwen3-TTS"
+                                        IsVisible="{Binding IsQwenSetupRequired}"
+                                        Command="{Binding SetupQwenCommand}" />
+                                    <Button
+                                        Content="Cancel download"
+                                        IsVisible="{Binding IsDownloadingKokoro}"
+                                        Command="{Binding DownloadKokoroCancelCommand}" />
+                                    <Button
+                                        Content="Cancel Qwen setup"
+                                        IsVisible="{Binding IsSettingUpQwen}"
+                                        Command="{Binding SetupQwenCancelCommand}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <TabControl Grid.Row="1">
+                    <TabItem Header="Narration review">
+                        <Grid RowDefinitions="Auto,Auto,*" Margin="0,12,0,0">
+                            <WrapPanel>
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Classes="accent"
+                                    Content="Run combined chapter analysis"
+                                    Command="{Binding AnalyzeChapterCommand}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Cancel"
+                                    Command="{Binding AnalyzeChapterCancelCommand}"
+                                    IsVisible="{Binding IsAnalyzing}" />
+                                <TextBlock
+                                    Margin="0,0,8,8"
+                                    Classes="secondary"
+                                    VerticalAlignment="Center"
+                                    Text="{Binding AnalyzerName, StringFormat='Local model: {0}'}" />
+                            </WrapPanel>
+                            <StackPanel Grid.Row="1" Spacing="6" Margin="0,8,0,12">
+                                <TextBlock
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding ChapterAnalysisGuidance}"
+                                    TextWrapping="Wrap" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    Text="Narrative segmentation and spoken-wording suggestions come from the same AI check. The source chapter is never changed; only accepted wording edits affect generated audio."
+                                    TextWrapping="Wrap" />
+                                <ProgressBar
+                                    Maximum="1"
+                                    AutomationProperties.Name="Spoken-content review progress"
+                                    IsVisible="{Binding IsAnalyzing}"
+                                    Value="{Binding AnalysisProgress}" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding SpeechReviewStatus}"
+                                    TextWrapping="Wrap" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding AnalysisStatus}"
+                                    TextWrapping="Wrap" />
+                                <TextBlock
+                                    IsVisible="{Binding IsSpeechReviewStale}"
+                                    Text="The chapter source changed after this review. Run the review again before using its suggestions."
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                            <ListBox
+                                Grid.Row="2"
+                                AutomationProperties.Name="Spoken-content suggestions"
+                                ItemsSource="{Binding SpeechEdits}"
+                                IsVisible="{Binding HasSpeechEdits}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:SpeechEditItem">
+                                        <Border Classes="panel" Padding="10" Margin="2">
+                                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto">
+                                                <TextBlock
+                                                    Classes="secondary"
+                                                    FontWeight="SemiBold"
+                                                    Text="{Binding StatusLabel}" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                                    <Button
+                                                        Content="Accept"
+                                                        Command="{Binding AcceptCommand}"
+                                                        IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}" />
+                                                    <Button
+                                                        Content="Reject"
+                                                        Command="{Binding RejectCommand}"
+                                                        IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}" />
+                                                </StackPanel>
+                                                <TextBlock
+                                                    Grid.Row="1"
+                                                    Grid.ColumnSpan="2"
+                                                    Margin="0,6,0,0"
+                                                    Text="{Binding OriginalText, StringFormat='Original: {0}'}"
+                                                    TextWrapping="Wrap" />
+                                                <TextBlock
+                                                    Grid.Row="2"
+                                                    Grid.ColumnSpan="2"
+                                                    Margin="0,4,0,0"
+                                                    Text="{Binding ReplacementText, StringFormat='Spoken version: {0}'}"
+                                                    TextWrapping="Wrap" />
+                                                <TextBlock
+                                                    Grid.Row="3"
+                                                    Grid.ColumnSpan="2"
+                                                    Classes="secondary"
+                                                    Margin="0,4,0,0"
+                                                    Text="{Binding Rationale}"
+                                                    TextWrapping="Wrap" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Border
+                                Grid.Row="2"
+                                Classes="card"
+                                IsVisible="{Binding HasNoSpeechEdits}"
+                                Padding="20"
+                                VerticalAlignment="Center">
+                                <StackPanel Spacing="6">
+                                    <TextBlock FontWeight="SemiBold" Text="No wording review yet" />
+                                    <TextBlock
+                                        Classes="secondary"
+                                        Text="Run the combined chapter analysis to check for optional read-aloud edits. Accepted suggestions never change your source text."
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="Preview &amp; voices">
                         <Grid RowDefinitions="Auto,Auto,*" Margin="0,12,0,0">
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Button
@@ -117,12 +525,21 @@
                                     Classes="secondary"
                                     VerticalAlignment="Center"
                                     Text="{Binding AnalyzerName, StringFormat='Analyzer: {0}'}" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    VerticalAlignment="Center"
+                                    Text="{Binding SelectedChapter.Role, StringFormat='Section: {0}'}" />
                                 <CheckBox
                                     Content="Multiple voices (dialogue cast)"
+                                    IsEnabled="{Binding CanChangeNarrationMode}"
                                     IsChecked="{Binding UseMultipleVoices}"
                                     ToolTip.Tip="Off: one narrator reads the whole book. Best for non-fiction, textbooks, memoir and essays. On: dialogue is attributed to characters." />
                             </StackPanel>
                             <StackPanel Grid.Row="1" Spacing="4" Margin="0,12">
+                                <TextBlock
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding ChapterAnalysisGuidance}"
+                                    TextWrapping="Wrap" />
                                 <ProgressBar
                                     Maximum="1"
                                     AutomationProperties.Name="Analysis progress"
@@ -172,8 +589,253 @@
                             </Grid>
                         </Grid>
                     </TabItem>
-                </TabControl>
-            </DockPanel>
+                    <TabItem Header="Chapter audio">
+                        <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="0,12,0,0">
+                            <WrapPanel>
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Analyze chapter"
+                                    Command="{Binding AnalyzeChapterCommand}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Classes="accent"
+                                    Content="Generate chapter audio"
+                                    Command="{Binding GenerateChapterCommand}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Pause generation"
+                                    Command="{Binding GenerateChapterCancelCommand}"
+                                    IsVisible="{Binding IsGeneratingChapter}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Play / Resume"
+                                    Command="{Binding PlayGeneratedAudioCommand}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Pause"
+                                    Command="{Binding PauseGeneratedAudioCommand}"
+                                    IsVisible="{Binding IsAudioPlaying}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Stop"
+                                    Command="{Binding StopGeneratedAudioCommand}"
+                                    IsVisible="{Binding HasActiveAudioPlayback}" />
+                                <Button
+                                    Margin="0,0,8,8"
+                                    Content="Export WAV…"
+                                    Command="{Binding ExportChapterAudioCommand}" />
+                            </WrapPanel>
+                            <StackPanel Grid.Row="1" Spacing="4" Margin="0,12">
+                                <TextBlock
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding ChapterAnalysisGuidance}"
+                                    TextWrapping="Wrap" />
+                                <ProgressBar
+                                    Maximum="1"
+                                    AutomationProperties.Name="Audio generation progress"
+                                    IsVisible="{Binding IsGenerating}"
+                                    Value="{Binding GenerationProgress}" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    AutomationProperties.LiveSetting="Polite"
+                                    Text="{Binding GenerationStatus}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="12" Margin="0,4">
+                                <ProgressBar
+                                    Maximum="1"
+                                    VerticalAlignment="Center"
+                                    AutomationProperties.Name="Audio playback progress"
+                                    Value="{Binding AudioPlaybackProgress}" />
+                                <TextBlock
+                                    Grid.Column="1"
+                                    Classes="secondary"
+                                    VerticalAlignment="Center"
+                                    Text="{Binding AudioPlaybackTime}" />
+                            </Grid>
+                            <DockPanel Grid.Row="3" Margin="0,8">
+                                <TextBlock
+                                    Classes="heading"
+                                    DockPanel.Dock="Top"
+                                    Margin="0,0,0,8"
+                                    Text="Voice assignments" />
+                                <ListBox
+                                    AutomationProperties.Name="Voice assignments"
+                                    ItemsSource="{Binding VoiceAssignments}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:VoiceAssignmentItem">
+                                            <Grid ColumnDefinitions="*,150,130,220,Auto" ColumnSpacing="8" Margin="4">
+                                                <TextBlock
+                                                    VerticalAlignment="Center"
+                                                    Text="{Binding SpeakerName}" />
+                                                <ComboBox
+                                                    Grid.Column="1"
+                                                    IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}"
+                                                    ItemsSource="{Binding VoiceIds}"
+                                                    SelectedItem="{Binding VoiceId}" />
+                                                <ComboBox
+                                                    Grid.Column="2"
+                                                    IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}"
+                                                    ItemsSource="{Binding Languages}"
+                                                    SelectedItem="{Binding Language}" />
+                                                <TextBox
+                                                    Grid.Column="3"
+                                                    IsEnabled="{Binding $parent[Window].DataContext.CanEditNarrationContent}"
+                                                    IsVisible="{Binding SupportsInstructions}"
+                                                    Text="{Binding Instruction}"
+                                                    PlaceholderText="Expressive direction (optional)" />
+                                                <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6">
+                                                    <Button
+                                                        Content="Suggest"
+                                                        IsVisible="{Binding SupportsInstructions}"
+                                                        ToolTip.Tip="Suggest an editable direction using the detected book type and this voice role. Analyze book structure first."
+                                                        Command="{Binding $parent[Window].DataContext.SuggestVoiceInstructionCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                    <Button
+                                                        Content="Preview"
+                                                        Command="{Binding $parent[Window].DataContext.PreviewVoiceCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Grid>
+                    </TabItem>
+                        </TabControl>
+                      </Grid>
+                    </TabItem>
+                    <TabItem Header="04  Publish">
+                        <Grid RowDefinitions="Auto,Auto,Auto,*" RowSpacing="16" Margin="0,12,0,0">
+                            <StackPanel Spacing="6">
+                                <TextBlock Classes="heading" FontSize="22" Text="Publish your audiobook" />
+                                <TextBlock
+                                    Classes="secondary"
+                                    Text="Generate the chapters in your queue in order. Completed segments are retained so interrupted work can resume."
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Border Grid.Row="1" Classes="workflow-guide" Padding="16" CornerRadius="10">
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock FontWeight="SemiBold" Text="{Binding BookReadinessSummary}" />
+                                        <ProgressBar
+                                            Maximum="1"
+                                            AutomationProperties.Name="Book audio readiness"
+                                            Value="{Binding BookAudioReadiness}" />
+                                        <ProgressBar
+                                            Maximum="1"
+                                            IsVisible="{Binding IsGeneratingBook}"
+                                            Value="{Binding GenerationProgress}" />
+                                        <TextBlock
+                                            Classes="secondary"
+                                            AutomationProperties.LiveSetting="Polite"
+                                            Text="{Binding GenerationStatus}"
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="8">
+                                        <Button
+                                            Classes="accent"
+                                            Content="Generate / resume whole book"
+                                            Command="{Binding GenerateBookCommand}" />
+                                        <Button
+                                            Content="Pause generation"
+                                            Command="{Binding GenerateBookCancelCommand}"
+                                            IsVisible="{Binding IsGeneratingBook}" />
+                                        <Button
+                                            Content="Export M4B…"
+                                            Command="{Binding ExportBookAudioCommand}"
+                                            IsVisible="{Binding HasGeneratedBookAudio}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <TextBlock
+                                Grid.Row="2"
+                                Classes="secondary"
+                                Text="{Binding TtsProviderDescription}"
+                                TextWrapping="Wrap" />
+                            <ListBox
+                                Grid.Row="3"
+                                AutomationProperties.Name="Chapter publishing status"
+                                ItemsSource="{Binding ChapterQueue}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:ChapterQueueItem">
+                                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="16" Margin="6">
+                                            <TextBlock
+                                                FontWeight="SemiBold"
+                                                Text="{Binding Title}"
+                                                TextTrimming="CharacterEllipsis" />
+                                            <TextBlock
+                                                Grid.Column="1"
+                                                Classes="secondary"
+                                                Text="{Binding Role}" />
+                                            <TextBlock
+                                                Grid.Column="2"
+                                                Classes="secondary"
+                                                Text="{Binding Status}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </TabItem>
+                    </TabControl>
+                  </Grid>
+                </Border>
+              </DockPanel>
+              <Border
+                  Classes="card"
+                  IsVisible="{Binding HasNoBook}"
+                  Padding="32"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  MaxWidth="520">
+                  <StackPanel Spacing="14" HorizontalAlignment="Center">
+                      <Border
+                          Width="56"
+                          Height="56"
+                          CornerRadius="18"
+                          Background="{DynamicResource AppAccentSoftBrush}">
+                          <TextBlock
+                              Text="♫"
+                              FontSize="28"
+                              Foreground="{DynamicResource AppAccentBrush}"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center" />
+                      </Border>
+                      <TextBlock
+                          Classes="heading"
+                          FontSize="22"
+                          Text="Start with a book"
+                          HorizontalAlignment="Center" />
+                      <TextBlock
+                          Classes="secondary"
+                          Text="Import an EPUB to open a project, prepare chapter text, review narration, and create your audiobook locally."
+                          TextAlignment="Center"
+                          TextWrapping="Wrap" />
+                      <Button
+                          Classes="accent"
+                          Content="Import an EPUB"
+                          Command="{Binding ImportEpubCommand}"
+                          HotKey="Ctrl+O" />
+                  </StackPanel>
+              </Border>
+              <Border
+                  Classes="card"
+                  IsVisible="{Binding HasBookWithoutSelectedChapter}"
+                  Padding="32"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  MaxWidth="520">
+                  <StackPanel Spacing="10">
+                      <TextBlock Classes="heading" Text="Select a chapter" />
+                      <TextBlock
+                          Classes="secondary"
+                          Text="Choose a chapter in the production queue on the left to prepare, analyze, and produce its audio. If you cannot see it, clear the queue search."
+                          TextWrapping="Wrap" />
+                  </StackPanel>
+              </Border>
+            </Grid>
         </Grid>
     </DockPanel>
 </Window>

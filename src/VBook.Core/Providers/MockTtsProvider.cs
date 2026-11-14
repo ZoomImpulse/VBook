@@ -11,6 +11,8 @@ public sealed class MockTtsProvider : ITtsProvider
     private const int SampleRate = 16_000;
     private const double CharactersPerSecond = 15;
 
+    public IReadOnlyList<string> VoiceIds { get; } = ["mock-warm", "mock-calm", "mock-bright", "mock-deep"];
+
     public ProviderCapabilities Capabilities { get; } =
         new("Mock tone synthesizer (no model)", IsMock: true, MaxContextCharacters: 2000);
 

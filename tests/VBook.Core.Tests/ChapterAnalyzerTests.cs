@@ -6,146 +6,117 @@ namespace VBook.Core.Tests;
 
 public sealed class ChapterAnalyzerTests
 {
-    private const string Sample =
-        "Mary looked up.\n\n“Where have you been?” asked Mary.\n\nTom shrugged. \"Out,\" he said.\n\n" +
-        "Tom said, \"Nowhere special.\" The rain kept falling.";
-
     [Fact]
-    public async Task MockProvider_CoversSourceExactlyAndAttributesSpeakers()
+    public async Task ChapterAnalyzer_CombinesSegmentationAndSourceAnchoredSpeechEdits()
     {
-        var analyzer = new ChapterAnalyzer(new MockLlmProvider());
-
-        var analysis = await analyzer.AnalyzeAsync(new AnalysisRequest("c1", Sample, []), null, default);
-
-        Assert.Equal(Sample, string.Concat(analysis.Segments.Select(segment => segment.TextFrom(Sample))));
-        var dialogue = analysis.Segments.Where(segment => segment.Kind == SegmentKind.Dialogue).ToArray();
-        Assert.Equal(["mary", "unknown", "tom"], dialogue.Select(segment => segment.SpeakerId));
-        Assert.Contains(analysis.Characters, character => character.Name == "Mary");
-        Assert.True(analysis.Matches(Sample));
-        Assert.False(analysis.Matches(Sample + "!"));
-    }
-
-    [Fact]
-    public async Task KnownCharacters_AreReusedByNameOrAlias()
-    {
-        var known = new[] { new Character("mary-jones", "Mary Jones", ["Mary"]) };
-        var analyzer = new ChapterAnalyzer(new MockLlmProvider());
-
-        var analysis = await analyzer.AnalyzeAsync(new AnalysisRequest("c1", Sample, known), null, default);
-
-        Assert.Equal("mary-jones", analysis.Segments.First(s => s.Kind == SegmentKind.Dialogue).SpeakerId);
-        Assert.DoesNotContain(analysis.Characters, character => character.Id == "mary");
-    }
-
-    [Fact]
-    public async Task EmptyText_ProducesNoSegments()
-    {
-        var analyzer = new ChapterAnalyzer(new MockLlmProvider());
-
-        var analysis = await analyzer.AnalyzeAsync(new AnalysisRequest("c1", "", []), null, default);
-
-        Assert.Empty(analysis.Segments);
-    }
-
-    [Fact]
-    public async Task LongText_IsChunkedToBudget_AndOffsetsStayExact()
-    {
-        var provider = new RecordingProvider(maxContext: 120);
-        var analyzer = new ChapterAnalyzer(provider);
-        var text = string.Join("\n", Enumerable.Range(0, 40).Select(i => $"“Line {i},” said Ann. Narration {i}."));
-        var reports = new List<AnalysisProgress>();
+        const string source = "Read this paragraph.\n\nVisit https://example.test now.";
+        var edit = new SpeechEditProposal(
+            "https://example.test",
+            "the example website",
+            "A raw URL is awkward to hear aloud.");
+        var analyzer = new ChapterAnalyzer(new FakeProvider([edit]));
 
         var analysis = await analyzer.AnalyzeAsync(
-            new AnalysisRequest("c1", text, []), new ListProgress(reports), default);
+            new AnalysisRequest("chapter-1", source, [], NarrationMode.MultiVoice),
+            null,
+            CancellationToken.None);
 
-        Assert.True(provider.Requests.Count > 1);
-        Assert.All(provider.Requests, request => Assert.True(request.Text.Length <= 120));
-        Assert.Equal(text, string.Concat(analysis.Segments.Select(segment => segment.TextFrom(text))));
-        Assert.Equal(Enumerable.Range(0, analysis.Segments.Count), analysis.Segments.Select(s => s.Index));
-        Assert.Contains(provider.Requests.Skip(1), request => request.KnownCharacters.Any(c => c.Id == "ann"));
-        Assert.Equal(1, reports[^1].Fraction);
+        var suggestion = Assert.Single(analysis.SpeechSuggestions!);
+        Assert.Equal(source.IndexOf("https://example.test", StringComparison.Ordinal), suggestion.Start);
+        Assert.Equal(edit.OriginalText, source.Substring(suggestion.Start, suggestion.Length));
+        Assert.Equal(SpeechEditStatus.Pending, suggestion.Status);
+        AnalysisValidator.EnsureValid(source, [], analysis.Segments);
     }
 
     [Fact]
-    public async Task ProviderOutputWithGap_IsRejected()
+    public async Task ChapterAnalyzer_IgnoresSuggestionsThatCrossDialogueBoundariesAndReportsWarning()
     {
-        var analyzer = new ChapterAnalyzer(new GappyProvider());
-
-        await Assert.ThrowsAsync<InvalidDataException>(
-            () => analyzer.AnalyzeAsync(new AnalysisRequest("c1", "Some text here.", []), null, default));
-    }
-
-    [Fact]
-    public async Task Cancellation_StopsAnalysis()
-    {
-        var analyzer = new ChapterAnalyzer(new MockLlmProvider());
-        using var cancellation = new CancellationTokenSource();
-        await cancellation.CancelAsync();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => analyzer.AnalyzeAsync(new AnalysisRequest("c1", Sample, []), null, cancellation.Token));
-    }
-
-    [Theory]
-    [InlineData("a b c d e f g h i j", 6)]
-    [InlineData("no-spaces-at-all-in-this-text", 5)]
-    [InlineData("line one\nline two\nline three\n", 12)]
-    public void Chunker_ProducesContiguousBoundedChunks(string text, int max)
-    {
-        var chunks = TextChunker.Split(text, max);
-
-        Assert.All(chunks, chunk => Assert.True(chunk.Text.Length <= max));
-        Assert.Equal(text, string.Concat(chunks.Select(chunk => chunk.Text)));
-        var expectedStart = 0;
-        foreach (var chunk in chunks)
-        {
-            Assert.Equal(expectedStart, chunk.Start);
-            expectedStart += chunk.Text.Length;
-        }
-    }
-
-    [Fact]
-    public void Validator_ReportsOverlapsAndMissingSpeakers()
-    {
-        var errors = AnalysisValidator.Validate(
-            "abcdef",
-            ["a"],
+        const string source = "Narration. “Dialogue.”";
+        var dialogueStart = source.IndexOf('“');
+        var provider = new FakeProvider(
+            [new SpeechEditProposal("“Dialogue.”", "a spoken phrase", "Normalize the dialogue.")],
             [
-                new NarrativeSegment(0, SegmentKind.Dialogue, "zzz", 0, 4),
-                new NarrativeSegment(1, SegmentKind.Narration, null, 3, 3),
+                new NarrativeSegment(0, SegmentKind.Narration, null, 0, dialogueStart),
+                new NarrativeSegment(
+                    1,
+                    SegmentKind.Dialogue,
+                    "ada",
+                    dialogueStart,
+                    source.Length - dialogueStart)
+            ],
+            [new Character("ada", "Ada", [])]);
+
+        var analysis = await new ChapterAnalyzer(provider).AnalyzeAsync(
+            new AnalysisRequest("chapter-1", source, [], NarrationMode.MultiVoice),
+            null,
+            CancellationToken.None);
+
+        Assert.Empty(analysis.SpeechSuggestions!);
+        Assert.NotEmpty(analysis.Warnings!);
+        AnalysisValidator.EnsureValid(source, ["ada"], analysis.Segments);
+    }
+
+    [Fact]
+    public void SpeechScriptBuilder_AppliesAcceptedSuggestionsOnly()
+    {
+        const string source = "Start. A citation. End.";
+        var start = source.IndexOf("A citation.", StringComparison.Ordinal);
+        var review = new SpeechEditReview(
+            "chapter-1",
+            TextFingerprint.Compute(source),
+            [
+                new SpeechEditSuggestion(
+                    Guid.NewGuid(), start, "A citation.".Length, "A citation.", "the citation", "Shorten it.",
+                    SpeechEditStatus.Accepted),
+                new SpeechEditSuggestion(
+                    Guid.NewGuid(), 0, "Start.".Length, "Start.", "Opening.", "Alternative wording.")
             ]);
 
-        Assert.Contains(errors, error => error.Contains("unknown speaker"));
-        Assert.Contains(errors, error => error.Contains("gap or overlap"));
+        Assert.Equal("Start. the citation End.", SpeechScriptBuilder.Apply(source, review));
     }
 
-    private sealed class ListProgress(List<AnalysisProgress> reports) : IProgress<AnalysisProgress>
+    [Fact]
+    public void SpeechScriptBuilder_IgnoresReviewsForChangedSource()
     {
-        public void Report(AnalysisProgress value) => reports.Add(value);
+        const string source = "Original text.";
+        var review = new SpeechEditReview(
+            "chapter-1",
+            TextFingerprint.Compute(source),
+            [
+                new SpeechEditSuggestion(
+                    Guid.NewGuid(), 0, source.Length, source, "Changed text.", "Suggested change.",
+                    SpeechEditStatus.Accepted)
+            ]);
+
+        Assert.Equal(source + " edited", SpeechScriptBuilder.Apply(source + " edited", review));
     }
 
-    private sealed class RecordingProvider(int maxContext) : ILlmProvider
+    [Fact]
+    public void SpeechScriptBuilder_RejectsOverlappingAcceptedEdits()
     {
-        private readonly MockLlmProvider _inner = new();
+        const string source = "one two three";
+        var review = new SpeechEditReview(
+            "chapter-1",
+            TextFingerprint.Compute(source),
+            [
+                new SpeechEditSuggestion(Guid.NewGuid(), 0, 7, "one two", "first", "Reason.", SpeechEditStatus.Accepted),
+                new SpeechEditSuggestion(Guid.NewGuid(), 4, 9, "two three", "second", "Reason.", SpeechEditStatus.Accepted)
+            ]);
 
-        public List<AnalysisRequest> Requests { get; } = [];
-
-        public ProviderCapabilities Capabilities { get; } = new("recording", true, maxContext);
-
-        public Task<SegmentationResult> AnalyzeAsync(AnalysisRequest request, CancellationToken cancellationToken)
-        {
-            Requests.Add(request);
-            return _inner.AnalyzeAsync(request, cancellationToken);
-        }
+        Assert.Throws<InvalidDataException>(() => SpeechScriptBuilder.Apply(source, review));
     }
 
-    private sealed class GappyProvider : ILlmProvider
+    private sealed class FakeProvider(
+        IReadOnlyList<SpeechEditProposal> edits,
+        IReadOnlyList<NarrativeSegment>? segments = null,
+        IReadOnlyList<Character>? characters = null) : ILlmProvider
     {
-        public ProviderCapabilities Capabilities { get; } = new("gappy", true, 1000);
+        public ProviderCapabilities Capabilities { get; } = new("fake", true, 1000);
 
         public Task<SegmentationResult> AnalyzeAsync(AnalysisRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new SegmentationResult(
-                [],
-                [new NarrativeSegment(0, SegmentKind.Narration, null, 0, 4)]));
+                characters ?? [],
+                segments ?? [new NarrativeSegment(0, SegmentKind.Narration, null, 0, request.Text.Length)],
+                edits));
     }
 }

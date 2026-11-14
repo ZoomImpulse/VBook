@@ -57,7 +57,8 @@ public static class SectionClassifier
         (Rx(@"^(table of )?contents?$"), SectionRole.Skip, "table of contents"),
         (Rx(@"^(title page|half[- ]?title|cover|front cover|back cover)$"), SectionRole.Skip, "title or cover page"),
         (Rx(@"^(copyright|copyright (page|notice)|legal notice|imprint|colophon|credits)$"), SectionRole.Skip, "copyright page"),
-        (Rx(@"^(also by|other books|books by|more books|you may also like|by the same author).*"), SectionRole.Skip, "promotional page"),
+        (Rx(@"^(also by|other(?:\s+[\p{L}\p{N}&'-]+){0,3}\s+books|books by|more books|you may also like|by the same author).*"), SectionRole.Skip, "promotional page"),
+        (Rx(@"^(endorsements?|praise for .*)$"), SectionRole.Skip, "promotional page"),
         (Rx(@".*(newsletter|sign up|mailing list|reading group).*"), SectionRole.Skip, "promotional page"),
         (Rx(@"^(index|bibliography|glossary|endnotes|notes|list of (illustrations|figures|tables))$"), SectionRole.Skip, "reference matter"),
         (Rx(@"^(dedication|epigraph|foreword|preface|introduction)$"), SectionRole.FrontMatter, "front matter"),
@@ -105,6 +106,21 @@ public static class SectionClassifier
 
         return new(SectionRole.Body, null);
     }
+
+    public static bool IsPartHeading(string? title, string text)
+    {
+        var normalizedTitle = NormalizeWhitespace(title);
+        var normalizedText = NormalizeWhitespace(text);
+        return normalizedText.Length <= 160 &&
+               Regex.IsMatch(
+                   normalizedTitle,
+                   @"^part\s+(?:\d+|[ivxlcdm]+)\b",
+                   RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) &&
+               string.Equals(normalizedTitle, normalizedText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeWhitespace(string? value) =>
+        Regex.Replace((value ?? string.Empty).Trim(), @"\s+", " ");
 
     private static IEnumerable<string> EpubTypes(XDocument document)
     {

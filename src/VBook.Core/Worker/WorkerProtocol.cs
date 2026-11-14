@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VBook.Core.Narrative;
+using VBook.Core.Books;
 
 namespace VBook.Core.Worker;
 
@@ -19,7 +20,8 @@ public sealed record AnalyzeChapterRequest(
     string ChapterId,
     string Text,
     IReadOnlyList<Character> KnownCharacters,
-    NarrationMode Mode = NarrationMode.MultiVoice) : WorkerRequest(RequestId);
+    NarrationMode Mode = NarrationMode.MultiVoice,
+    SectionRole SectionRole = SectionRole.Body) : WorkerRequest(RequestId);
 
 /// <summary>Asks an out-of-process worker to stop the request with the given ID.</summary>
 public sealed record CancelRequest(Guid RequestId) : WorkerRequest(RequestId);

@@ -17,4 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\VBook.App\VBook.App.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\src\VBook.App\App.axaml" LogicalName="VBook.App.Tests.App.axaml" />
+  </ItemGroup>
 </Project>

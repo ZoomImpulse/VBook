@@ -1,12 +1,45 @@
 using Microsoft.Data.Sqlite;
 using VBook.Core.Books;
 using VBook.Core.Projects;
+using VBook.Core.Providers;
 using Xunit;
 
 namespace VBook.Core.Tests;
 
 public sealed class SqliteProjectStoreTests
 {
+    [Fact]
+    public async Task VoiceProfiles_AreScopedByProjectProviderAndSpeaker()
+    {
+        var databasePath = CreateDatabasePath();
+        try
+        {
+            var store = new SqliteProjectStore(databasePath);
+            await store.InitializeAsync();
+            var project = new AudiobookProject(
+                Guid.NewGuid(), "Book", "book.epub", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                [new ImportedChapter("c1", "Chapter", "Text.")]);
+            await store.SaveAsync(project);
+            await store.SaveVoiceAssignmentAsync(project.Id, "narrator", "af_heart");
+            var qwen = new SpeechVoiceProfile("Ryan", "English", "Speak calmly.");
+            await store.SaveVoiceProfileAsync(project.Id, "Qwen3-TTS", "narrator", qwen);
+            await store.SaveVoiceProfileAsync(project.Id, "Kokoro", "narrator", new("af_heart", "Auto", ""));
+
+            var reopened = new SqliteProjectStore(databasePath);
+            await reopened.InitializeAsync();
+            Assert.Equal(qwen, (await reopened.LoadVoiceProfilesAsync(project.Id, "Qwen3-TTS"))["narrator"]);
+            Assert.Equal("af_heart", (await reopened.LoadVoiceProfilesAsync(project.Id, "Kokoro"))["narrator"].VoiceId);
+            Assert.Equal("af_heart", (await reopened.LoadVoiceAssignmentsAsync(project.Id))["narrator"]);
+            Assert.Empty(await reopened.LoadVoiceProfilesAsync(project.Id, "Piper"));
+            await reopened.DeleteAsync(project.Id);
+            Assert.Empty(await reopened.LoadVoiceProfilesAsync(project.Id, "Qwen3-TTS"));
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
     [Fact]
     public async Task SaveAndLoad_PreservesEditedTextAndChapterOrder()
     {
@@ -17,6 +50,15 @@ public sealed class SqliteProjectStoreTests
             await store.InitializeAsync();
             var projectId = Guid.NewGuid();
             var createdAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var structureAnalysis = new BookStructureResult(
+                "fantasy",
+                [
+                    new ChapterStructureSuggestion(
+                        "chapter-1",
+                        SectionRole.FrontMatter,
+                        0.91,
+                        "Introduces the story.")
+                ]);
             var project = new AudiobookProject(
                 projectId,
                 "Sample book",
@@ -24,9 +66,11 @@ public sealed class SqliteProjectStoreTests
                 createdAt,
                 DateTimeOffset.UtcNow,
                 [
-                    new ImportedChapter("chapter-1", "Opening", "Edited opening text."),
-                    new ImportedChapter("chapter-2", "Next", "Second chapter.")
-                ]);
+                    new ImportedChapter("chapter-1", "Opening", "Edited opening text.", SectionRole.FrontMatter),
+                    new ImportedChapter("chapter-2", "Next", "Second chapter.", SectionRole.BackMatter)
+                ],
+                VBook.Core.Narrative.NarrationMode.SingleNarrator,
+                structureAnalysis);
 
             await store.SaveAsync(project);
 
@@ -43,6 +87,16 @@ public sealed class SqliteProjectStoreTests
                 new[] { "chapter-1", "chapter-2" },
                 loaded.Chapters.Select(chapter => chapter.Id));
             Assert.Equal("Edited opening text.", loaded.Chapters[0].Text);
+            Assert.Equal(SectionRole.FrontMatter, loaded.Chapters[0].Role);
+            Assert.Equal(SectionRole.BackMatter, loaded.Chapters[1].Role);
+            Assert.Equal(VBook.Core.Narrative.NarrationMode.SingleNarrator, loaded.NarrationMode);
+            Assert.NotNull(loaded.StructureAnalysis);
+            Assert.Equal("fantasy", loaded.StructureAnalysis.Genre);
+            var savedSuggestion = Assert.Single(loaded.StructureAnalysis.Chapters);
+            Assert.Equal("chapter-1", savedSuggestion.ChapterId);
+            Assert.Equal(SectionRole.FrontMatter, savedSuggestion.Role);
+            Assert.Equal(0.91, savedSuggestion.Confidence);
+            Assert.Equal("Introduces the story.", savedSuggestion.Rationale);
             Assert.Equal(projectId, Assert.Single(recent).Id);
         }
         finally
@@ -118,6 +172,63 @@ public sealed class SqliteProjectStoreTests
             Assert.Empty(await store.GetRecentAsync());
             Assert.Empty(await store.LoadCharactersAsync(projectId));
             Assert.Null(await store.LoadAnalysisAsync(projectId, "chapter-1"));
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Initialize_MigratesExistingProjectAndAnalysisTables()
+    {
+        var databasePath = CreateDatabasePath();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+            var projectId = Guid.NewGuid();
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    CREATE TABLE Projects (
+                        Id TEXT NOT NULL PRIMARY KEY,
+                        Title TEXT NOT NULL,
+                        SourcePath TEXT NOT NULL,
+                        CreatedAt TEXT NOT NULL,
+                        UpdatedAt TEXT NOT NULL
+                    );
+                    CREATE TABLE ChapterAnalyses (
+                        ProjectId TEXT NOT NULL,
+                        ChapterId TEXT NOT NULL,
+                        SourceHash TEXT NOT NULL,
+                        AnalyzedAt TEXT NOT NULL,
+                        PRIMARY KEY (ProjectId, ChapterId)
+                    );
+                    INSERT INTO Projects (Id, Title, SourcePath, CreatedAt, UpdatedAt)
+                    VALUES ($id, 'Legacy', 'legacy.epub', $created, $updated);
+                    INSERT INTO ChapterAnalyses (ProjectId, ChapterId, SourceHash, AnalyzedAt)
+                    VALUES ($id, 'c1', 'hash', $updated);
+                    """;
+                command.Parameters.AddWithValue("$id", projectId.ToString("D"));
+                command.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow.ToString("O"));
+                command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var store = new SqliteProjectStore(databasePath);
+            await store.InitializeAsync();
+
+            var project = await store.LoadAsync(projectId);
+            var analysis = await store.LoadAnalysisAsync(projectId, "c1");
+
+            Assert.NotNull(project);
+            Assert.Null(project.NarrationMode);
+            Assert.NotNull(analysis);
+            Assert.Equal(VBook.Core.Narrative.NarrationMode.MultiVoice, analysis.Mode);
+            Assert.Equal(SectionRole.Body, analysis.SectionRole);
         }
         finally
         {
