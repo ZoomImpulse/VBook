@@ -34,7 +34,27 @@ public sealed class AudioGenerationService
         SectionRole sectionRole = SectionRole.Body,
         SpeechEditReview? speechReview = null,
         IReadOnlyDictionary<string, SpeechVoiceProfile>? voiceProfiles = null,
-        string defaultLanguage = "")
+        string defaultLanguage = "",
+        IProgress<GeneratedAudioSegment>? segmentProgress = null)
+        => (await GenerateAsync(projectId, chapterId, text, analysis, mode, voiceAssignments, progress,
+            cancellationToken, sectionRole, speechReview, voiceProfiles, defaultLanguage, null, segmentProgress))!;
+
+    public Task<GeneratedChapter?> GenerateSegmentAsync(
+        Guid projectId, string chapterId, string text, ChapterAnalysis analysis, NarrationMode mode,
+        IReadOnlyDictionary<string, string> voiceAssignments, int segmentIndex,
+        CancellationToken cancellationToken, SectionRole sectionRole = SectionRole.Body,
+        SpeechEditReview? speechReview = null,
+        IReadOnlyDictionary<string, SpeechVoiceProfile>? voiceProfiles = null,
+        string defaultLanguage = "", IProgress<GeneratedAudioSegment>? segmentProgress = null)
+        => GenerateAsync(projectId, chapterId, text, analysis, mode, voiceAssignments, null,
+            cancellationToken, sectionRole, speechReview, voiceProfiles, defaultLanguage, segmentIndex, segmentProgress);
+
+    private async Task<GeneratedChapter?> GenerateAsync(
+        Guid projectId, string chapterId, string text, ChapterAnalysis analysis, NarrationMode mode,
+        IReadOnlyDictionary<string, string> voiceAssignments, IProgress<GenerationProgress>? progress,
+        CancellationToken cancellationToken, SectionRole sectionRole, SpeechEditReview? speechReview,
+        IReadOnlyDictionary<string, SpeechVoiceProfile>? voiceProfiles, string defaultLanguage,
+        int? segmentIndex, IProgress<GeneratedAudioSegment>? segmentProgress)
     {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(analysis);
@@ -53,6 +73,10 @@ public sealed class AudioGenerationService
         if (analysis.Segments.Count == 0)
         {
             throw new InvalidOperationException("The chapter has no text segments to generate.");
+        }
+        if (segmentIndex is < 0 || segmentIndex >= analysis.Segments.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(segmentIndex));
         }
 
         if (_provider.VoiceIds.Count == 0)
@@ -89,6 +113,14 @@ public sealed class AudioGenerationService
             for (var index = 0; index < analysis.Segments.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (segmentIndex is not null && index != segmentIndex)
+                {
+                    if (existing.TryGetValue(index, out var saved))
+                    {
+                        segmentProgress?.Report(saved);
+                    }
+                    continue;
+                }
                 var segment = analysis.Segments[index];
                 var assignmentKey = segment.SpeakerId ?? "narrator";
                 var legacyVoiceId = voiceAssignments.GetValueOrDefault(assignmentKey, _provider.VoiceIds[0]);
@@ -101,10 +133,11 @@ public sealed class AudioGenerationService
                         $"Voice '{voiceId}' assigned to '{assignmentKey}' is not available from {_provider.Capabilities.Name}.");
                 }
 
-                if (existing.TryGetValue(index, out var cached) &&
+                if (segmentIndex is null && existing.TryGetValue(index, out var cached) &&
                     string.Equals(cached.VoiceId, voiceId, StringComparison.Ordinal) &&
                     string.Equals(cached.ProfileHash, ComputeProfileHash(profile), StringComparison.Ordinal))
                 {
+                    segmentProgress?.Report(cached);
                     completed++;
                     progress?.Report(new GenerationProgress(completed, analysis.Segments.Count,
                         $"Resuming: reused audio segment {index + 1} of {analysis.Segments.Count}."));
@@ -113,10 +146,9 @@ public sealed class AudioGenerationService
 
                 var segmentText = SpeechScriptBuilder.ApplyToSegment(text, segment, speechReview).Trim();
                 var generated = await SynthesizeTextAsync(segmentText, profile, cancellationToken);
-                await _store.SaveGeneratedSegmentAsync(
-                    job.Id,
-                    generated with { Index = index, ProfileHash = ComputeProfileHash(profile) },
-                    cancellationToken);
+                generated = generated with { Index = index, ProfileHash = ComputeProfileHash(profile) };
+                await _store.SaveGeneratedSegmentAsync(job.Id, generated, cancellationToken);
+                segmentProgress?.Report(generated);
                 completed++;
                 progress?.Report(new GenerationProgress(completed, analysis.Segments.Count,
                     $"Generated audio segment {completed} of {analysis.Segments.Count}."));
@@ -126,6 +158,11 @@ public sealed class AudioGenerationService
             if (result.Count != analysis.Segments.Count ||
                 result.Where((segment, index) => segment.Index != index).Any())
             {
+                if (segmentIndex is not null)
+                {
+                    await _store.UpdateGenerationJobAsync(job.Id, GenerationJobStatus.Paused, cancellationToken: cancellationToken);
+                    return null;
+                }
                 throw new InvalidDataException("Generated chapter audio is incomplete or out of order.");
             }
 

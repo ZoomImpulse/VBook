@@ -621,6 +621,63 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SegmentAudio_CanBePlayedRegeneratedAndRestored()
+    {
+        var playback = new FakeAudioPlaybackService();
+        var (viewModel, store) = await CreateImportedViewModelAsync(new MockLlmProvider(), audioPlayback: playback);
+        viewModel.BookLanguage = "English";
+        await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
+        var segment = viewModel.Segments[0];
+
+        await viewModel.GenerateSegmentCommand.ExecuteAsync(segment);
+        await WaitUntilAsync(() => segment.HasAudio);
+        viewModel.PlaySegmentCommand.Execute(segment);
+        Assert.True(playback.IsPlaying);
+        Assert.True(viewModel.IsAudioPlaying);
+        viewModel.PauseGeneratedAudioCommand.Execute(null);
+        Assert.True(viewModel.PlayGeneratedAudioCommand.CanExecute(null));
+        viewModel.PlayGeneratedAudioCommand.Execute(null);
+        Assert.True(playback.IsPlaying);
+
+        await viewModel.GenerateSegmentCommand.ExecuteAsync(segment);
+        Assert.True(segment.HasAudio);
+        await viewModel.FlushAsync();
+        using var reopened = CreateViewModel(store, new MockLlmProvider());
+        await reopened.InitializeAsync();
+        await WaitUntilAsync(() => reopened.Segments.Any(item => item.HasAudio));
+        Assert.True(reopened.Segments[0].HasAudio);
+    }
+
+    [Fact]
+    public async Task SegmentAudio_IsPlayableWhileChapterGenerationContinues()
+    {
+        var provider = new BlockingSecondSegmentTtsProvider();
+        var playback = new FakeAudioPlaybackService();
+        var (viewModel, _) = await CreateImportedViewModelAsync(
+            new MockLlmProvider(), audioPlayback: playback, ttsProvider: provider);
+        viewModel.BookLanguage = "English";
+        await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
+        Assert.True(viewModel.Segments.Count > 1);
+
+        var generation = viewModel.GenerateChapterCommand.ExecuteAsync(null);
+        try
+        {
+            await provider.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() => viewModel.Segments[0].HasAudio);
+            Assert.True(viewModel.IsGenerating);
+            Assert.False(viewModel.GenerateSegmentCommand.CanExecute(viewModel.Segments[0]));
+            viewModel.PlaySegmentCommand.Execute(viewModel.Segments[0]);
+            Assert.True(playback.IsPlaying);
+        }
+        finally
+        {
+            provider.Continue.TrySetResult();
+            await generation;
+        }
+        Assert.True(playback.IsPlaying);
+    }
+
+    [Fact]
     public async Task AudioPlaybackControls_PlayPauseResumeAndStopGeneratedAudio()
     {
         var playback = new FakeAudioPlaybackService();
@@ -965,6 +1022,27 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
 
         public void Dispose()
         {
+        }
+    }
+
+    private sealed class BlockingSecondSegmentTtsProvider : ITtsProvider
+    {
+        private readonly MockTtsProvider _inner = new();
+        private int _calls;
+        public TaskCompletionSource SecondStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Continue { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ProviderCapabilities Capabilities => _inner.Capabilities;
+        public IReadOnlyList<string> VoiceIds => _inner.VoiceIds;
+        public IReadOnlyList<string> Languages => _inner.Languages;
+
+        public async Task<SpeechResult> SynthesizeAsync(SpeechRequest request, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 2)
+            {
+                SecondStarted.TrySetResult();
+                await Continue.Task.WaitAsync(cancellationToken);
+            }
+            return await _inner.SynthesizeAsync(request, cancellationToken);
         }
     }
 

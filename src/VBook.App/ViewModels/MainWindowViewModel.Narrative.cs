@@ -6,11 +6,24 @@ using VBook.App.Services;
 using VBook.Core.Books;
 using VBook.Core.Generation;
 using VBook.Core.Narrative;
+using VBook.Core.Projects;
 using VBook.Core.Providers;
 
 namespace VBook.App.ViewModels;
 
-public sealed record SegmentItem(int Index, string Speaker, bool IsNarration, string Text);
+public sealed partial class SegmentItem(int index, string speaker, bool isNarration, string text) : ObservableObject
+{
+    public int Index { get; } = index;
+    public string Speaker { get; } = speaker;
+    public bool IsNarration { get; } = isNarration;
+    public string Text { get; } = text;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasAudio))]
+    private byte[]? _audio;
+
+    public bool HasAudio => Audio is not null;
+}
 
 public sealed record CharacterItem(string Name, string Detail);
 
@@ -22,6 +35,8 @@ public sealed partial class MainWindowViewModel
     private int _analysisLoadVersion;
     private int _chapterQueueRefreshVersion;
     private byte[]? _generatedWavBytes;
+    private bool _playingSegment;
+    private int _segmentAudioVersion;
     private int _voiceAssignmentUpdateDepth;
     private readonly IAudioPlaybackService _audioPlayback;
     private readonly BookAudioGenerationService _bookAudioGeneration;
@@ -164,6 +179,10 @@ public sealed partial class MainWindowViewModel
     private bool _isGeneratingBook;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsGeneratingChapter))]
+    private bool _isGeneratingSegment;
+
+    [ObservableProperty]
     private double _structureProgress;
 
     [ObservableProperty]
@@ -222,7 +241,7 @@ public sealed partial class MainWindowViewModel
 
     public bool HasGeneratedBookAudio => _generatedBookAudio is not null;
 
-    public bool IsGeneratingChapter => IsGenerating && !IsGeneratingBook;
+    public bool IsGeneratingChapter => IsGenerating && !IsGeneratingBook && !IsGeneratingSegment;
 
     public bool HasDetectedGenre => !string.IsNullOrWhiteSpace(DetectedGenre);
 
@@ -1087,6 +1106,16 @@ public sealed partial class MainWindowViewModel
 
     [RelayCommand(CanExecute = nameof(CanGenerateChapter), IncludeCancelCommand = true)]
     private async Task GenerateChapterAsync(CancellationToken cancellationToken)
+        => await GenerateAudioAsync(null, cancellationToken);
+
+    [RelayCommand(CanExecute = nameof(CanGenerateSegment), IncludeCancelCommand = true)]
+    private async Task GenerateSegmentAsync(SegmentItem segment, CancellationToken cancellationToken)
+        => await GenerateAudioAsync(segment, cancellationToken);
+
+    private bool CanGenerateSegment(SegmentItem? segment) =>
+        segment is not null && Segments.Contains(segment) && CanGenerateChapter();
+
+    private async Task GenerateAudioAsync(SegmentItem? targetSegment, CancellationToken cancellationToken)
     {
         if (_projectId is not { } projectId || SelectedChapter is not { } chapter || _analysis is not { } analysis)
         {
@@ -1109,9 +1138,17 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        IsGeneratingSegment = targetSegment is not null;
         IsGenerating = true;
         GenerationProgress = 0;
         GenerationStatus = "Preparing audio generation…";
+        if (targetSegment is not null)
+        {
+            ClearGeneratedBookAudio();
+            _generatedWavBytes = null;
+            PlayGeneratedAudioCommand.NotifyCanExecuteChanged();
+            ExportChapterAudioCommand.NotifyCanExecuteChanged();
+        }
         try
         {
             await FlushPendingSaveAsync();
@@ -1128,29 +1165,44 @@ public sealed partial class MainWindowViewModel
                 GenerationProgress = report.Fraction;
                 GenerationStatus = report.Message;
             });
-            var generated = await _audioGeneration.GenerateChapterAsync(
-                projectId,
-                chapter.Id,
-                text,
-                analysis,
-                UseMultipleVoices ? NarrationMode.MultiVoice : NarrationMode.SingleNarrator,
-                assignments,
-                progress,
-                cancellationToken,
-                chapter.Role,
-                _speechReview?.ChapterId == chapter.Id ? _speechReview : null,
-                profiles,
-                BookLanguage);
+            var mode = UseMultipleVoices ? NarrationMode.MultiVoice : NarrationMode.SingleNarrator;
+            var review = _speechReview?.ChapterId == chapter.Id ? _speechReview : null;
+            var audioVersion = _segmentAudioVersion;
+            var segmentProgress = new Progress<GeneratedAudioSegment>(segment =>
+            {
+                if (_segmentAudioVersion == audioVersion && _projectId == projectId &&
+                    SelectedChapter?.Id == chapter.Id && ReferenceEquals(_analysis, analysis))
+                {
+                    var item = Segments.FirstOrDefault(item => item.Index == segment.Index);
+                    if (item is not null)
+                    {
+                        item.Audio = segment.WavBytes;
+                    }
+                }
+            });
+            var generated = targetSegment is null
+                ? await _audioGeneration.GenerateChapterAsync(projectId, chapter.Id, text, analysis, mode,
+                    assignments, progress, cancellationToken, chapter.Role, review, profiles, BookLanguage, segmentProgress)
+                : await _audioGeneration.GenerateSegmentAsync(projectId, chapter.Id, text, analysis, mode,
+                    assignments, targetSegment.Index, cancellationToken, chapter.Role, review, profiles, BookLanguage, segmentProgress);
             if (_projectId == projectId && SelectedChapter?.Id == chapter.Id && ReferenceEquals(_analysis, analysis))
             {
                 ClearGeneratedBookAudio();
-                _audioPlayback.Stop();
-                ResetAudioPlayback();
-                _generatedWavBytes = generated.WavBytes;
+                if (!_playingSegment)
+                {
+                    _audioPlayback.Stop();
+                    ResetAudioPlayback();
+                }
+                _generatedWavBytes = generated?.WavBytes;
                 PlayGeneratedAudioCommand.NotifyCanExecuteChanged();
                 ExportChapterAudioCommand.NotifyCanExecuteChanged();
-                GenerationStatus = $"Generated {generated.Job.TotalSegments} segments ({generated.Duration:g}).";
+                GenerationStatus = generated is null
+                    ? $"Generated segment {targetSegment!.Index + 1}. Generate the remaining segments to complete the chapter."
+                    : targetSegment is null
+                        ? $"Generated {generated.Job.TotalSegments} segments ({generated.Duration:g})."
+                        : $"Regenerated segment {targetSegment.Index + 1}.";
             }
+
             else
             {
                 GenerationStatus = $"Audio generation completed for {chapter.Title}. Select it and generate again to load the saved audio.";
@@ -1169,6 +1221,31 @@ public sealed partial class MainWindowViewModel
         finally
         {
             IsGenerating = false;
+            IsGeneratingSegment = false;
+        }
+    }
+
+    [RelayCommand]
+    private void PlaySegment(SegmentItem segment)
+    {
+        if (!Segments.Contains(segment) || segment.Audio is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _audioPlayback.Play(segment.Audio);
+            _playingSegment = true;
+            IsAudioPlaying = _audioPlayback.IsPlaying;
+            IsAudioPaused = _audioPlayback.IsPaused;
+            UpdateAudioPlaybackTime();
+            _audioPlaybackTimer.Start();
+            GenerationStatus = $"Playing segment {segment.Index + 1}.";
+        }
+        catch (Exception exception)
+        {
+            GenerationStatus = $"Could not play segment: {exception.Message}";
         }
     }
 
@@ -1200,7 +1277,7 @@ public sealed partial class MainWindowViewModel
     [RelayCommand(CanExecute = nameof(CanPlayAudio))]
     private void PlayGeneratedAudio()
     {
-        if (_generatedWavBytes is null)
+        if (_generatedWavBytes is null && !_audioPlayback.IsPaused)
         {
             return;
         }
@@ -1213,14 +1290,15 @@ public sealed partial class MainWindowViewModel
             }
             else
             {
-                _audioPlayback.Play(_generatedWavBytes);
+                _audioPlayback.Play(_generatedWavBytes!);
+                _playingSegment = false;
             }
 
             IsAudioPlaying = _audioPlayback.IsPlaying;
             IsAudioPaused = _audioPlayback.IsPaused;
             UpdateAudioPlaybackTime();
             _audioPlaybackTimer.Start();
-            GenerationStatus = IsAudioPaused ? "Audio playback paused." : "Playing generated chapter audio.";
+            GenerationStatus = _playingSegment ? "Playing segment audio." : "Playing generated chapter audio.";
         }
         catch (Exception exception)
         {
@@ -1297,6 +1375,7 @@ public sealed partial class MainWindowViewModel
             cancellationToken.ThrowIfCancellationRequested();
 
             _audioPlayback.Play(result.WavBytes);
+            _playingSegment = false;
             IsAudioPlaying = _audioPlayback.IsPlaying;
             IsAudioPaused = _audioPlayback.IsPaused;
             UpdateAudioPlaybackTime();
@@ -1408,6 +1487,7 @@ public sealed partial class MainWindowViewModel
             assignment.SetProposedReference(result.WavBytes, sampleText);
 
             _audioPlayback.Play(result.WavBytes);
+            _playingSegment = false;
             IsAudioPlaying = _audioPlayback.IsPlaying;
             IsAudioPaused = _audioPlayback.IsPaused;
             UpdateAudioPlaybackTime();
@@ -1719,7 +1799,7 @@ public sealed partial class MainWindowViewModel
 
     private bool CanExportAudio() => _generatedWavBytes is not null && SelectedChapter is not null;
 
-    private bool CanPlayAudio() => _generatedWavBytes is not null && !IsAudioPlaying;
+    private bool CanPlayAudio() => (_generatedWavBytes is not null || IsAudioPaused) && !IsAudioPlaying;
 
     private bool CanPauseAudio() => IsAudioPlaying;
 
@@ -1727,6 +1807,11 @@ public sealed partial class MainWindowViewModel
 
     private void ClearGeneratedAudioForChapterChange()
     {
+        _segmentAudioVersion++;
+        foreach (var segment in Segments)
+        {
+            segment.Audio = null;
+        }
         if (_generatedWavBytes is null && !IsAudioPlaying && !IsAudioPaused)
         {
             return;
@@ -1749,6 +1834,7 @@ public sealed partial class MainWindowViewModel
 
     private void ResetAudioPlayback()
     {
+        _playingSegment = false;
         _audioPlaybackTimer.Stop();
         IsAudioPlaying = false;
         IsAudioPaused = false;
@@ -2104,6 +2190,10 @@ public sealed partial class MainWindowViewModel
             {
                 return;
             }
+            if (analysis is not null && !IsAnalysisStale)
+            {
+                await LoadSegmentAudioAsync(projectId.Value, chapter, analysis, version);
+            }
 
             if (!IsAnalyzing)
             {
@@ -2122,6 +2212,7 @@ public sealed partial class MainWindowViewModel
 
     private void ApplyAnalysis(ChapterAnalysis? analysis)
     {
+        ClearGeneratedAudioForChapterChange();
         _analysis = analysis;
         Segments.Clear();
         Characters.Clear();
@@ -2174,6 +2265,44 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasCharacters));
         HasAnalysis = true;
         UpdateSelectedQueueStatus();
+    }
+
+    private async Task LoadSegmentAudioAsync(Guid projectId, ImportedChapter chapter, ChapterAnalysis analysis, int loadVersion)
+    {
+        if (_generationStore is not IGenerationQueueStore queueStore || !HasValidVoiceLanguages())
+        {
+            return;
+        }
+
+        var audioVersion = _segmentAudioVersion;
+        var profiles = VoiceAssignments.ToDictionary(item => item.SpeakerId, item => item.Profile, StringComparer.Ordinal);
+        var effective = _audioGeneration.ResolveEffectiveVoiceProfiles(profiles, BookLanguage);
+        var review = _speechReview?.ChapterId == chapter.Id ? _speechReview : null;
+        var fingerprint = AudioGenerationService.ComputeGenerationFingerprint(
+            _ttsProvider.Capabilities.Name, analysis, review, effective);
+        var jobs = await queueStore.LoadGenerationJobsAsync(projectId);
+        var job = jobs.FirstOrDefault(item => item.ChapterId == chapter.Id &&
+            item.SourceHash == fingerprint && item.NarrationMode == analysis.Mode);
+        if (job is null)
+        {
+            return;
+        }
+
+        var saved = await _generationStore.LoadGeneratedSegmentsAsync(job.Id);
+        if (loadVersion != _analysisLoadVersion || audioVersion != _segmentAudioVersion ||
+            !ReferenceEquals(_analysis, analysis) || IsGenerating)
+        {
+            return;
+        }
+
+        foreach (var segment in saved)
+        {
+            var item = Segments.FirstOrDefault(item => item.Index == segment.Index);
+            if (item is not null)
+            {
+                item.Audio = segment.WavBytes;
+            }
+        }
     }
 
     private void ApplySpeechReview(SpeechEditReview? review)

@@ -150,6 +150,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
             Interval = TimeSpan.FromMilliseconds(200)
         };
         _audioPlaybackTimer.Tick += OnAudioPlaybackTimerTick;
+        GenerateChapterCommand.CanExecuteChanged += (_, _) => GenerateSegmentCommand.NotifyCanExecuteChanged();
     }
 
     public ObservableCollection<ImportedChapter> Chapters { get; } = [];
