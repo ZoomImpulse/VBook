@@ -14,20 +14,31 @@ public sealed class QwenTtsProcessRunnerIntegrationTests
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "LocalAudiobookStudio");
         var python = Path.Combine(applicationDataDirectory, "qwen-runtime", "Scripts", "python.exe");
-        var model = Path.Combine(
+        var models = Path.Combine(
             applicationDataDirectory,
             "models",
-            "Qwen3-TTS-12Hz-1.7B-CustomVoice");
+            "Qwen3-TTS-12Hz-1.7B-VoiceDesign");
+        var voiceDesignModel = Path.Combine(models, "VoiceDesign");
+        var baseModel = Path.Combine(models, "Base");
         var worker = Path.Combine(FindRepositoryRoot(), "src", "VBook.App", "Services", "qwen_tts_worker.py");
-        using var runner = new QwenTtsProcessRunner(python, worker, model);
+        using var runner = new QwenTtsProcessRunner(python, worker, voiceDesignModel, baseModel);
         using var provider = new QwenTtsProvider(runner);
 
+        const string referenceText = "This is a short voice identity sample.";
+        var reference = await provider.GenerateVoiceDesignAsync(
+            new VoiceDesignRequest(
+                referenceText,
+                "English",
+                "A clear, natural audiobook narrator voice with measured pacing."),
+            CancellationToken.None);
         var result = await provider.SynthesizeAsync(
             new SpeechRequest(
                 "This test exercises Qwen through the same C sharp worker process runner used by VBook.",
-                "Ryan",
+                QwenTtsProvider.DesignedVoiceId,
                 "English",
-                "Speak clearly and calmly."),
+                "A clear, natural audiobook narrator voice with measured pacing.",
+                reference.WavBytes,
+                referenceText),
             CancellationToken.None);
         var audio = WavPcm.ReadPcmAudio(result.WavBytes);
 

@@ -148,6 +148,36 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public void SetupQwenCommand_UpdatesEnabledStateWhenGenerationStartsAndStops()
+    {
+        using var client = new HttpClient(new EmptyHttpMessageHandler());
+        using var ttsProvider = new LocalTtsProviderService(
+            new KokoroModelAssetManager(client, Path.Combine(_directory, "models")),
+            new FakeKokoroSpeechEngineFactory(),
+            piperExecutable: null,
+            piperVoicesDirectory: null,
+            Path.Combine(_directory, "tts-settings.json"));
+        ttsProvider.SelectProvider(LocalTtsProviderService.QwenProviderId);
+        var store = new SqliteProjectStore(Path.Combine(_directory, "qwen-setup-command.sqlite3"));
+        using var viewModel = CreateViewModel(store, new MockLlmProvider(), ttsProvider: ttsProvider);
+        var canExecuteChangedCount = 0;
+        viewModel.SetupQwenCommand.CanExecuteChanged += (_, _) => canExecuteChangedCount++;
+
+        Assert.True(viewModel.IsQwenSetupRequired);
+        Assert.True(viewModel.SetupQwenCommand.CanExecute(null));
+
+        viewModel.IsGenerating = true;
+
+        Assert.False(viewModel.SetupQwenCommand.CanExecute(null));
+        Assert.Equal(1, canExecuteChangedCount);
+
+        viewModel.IsGenerating = false;
+
+        Assert.True(viewModel.SetupQwenCommand.CanExecute(null));
+        Assert.Equal(2, canExecuteChangedCount);
+    }
+
+    [Fact]
     public async Task ChapterAnalysisGuidance_ExplainsSelectionSkippedSectionsAndBusyState()
     {
         var (viewModel, _) = await CreateImportedViewModelAsync(new MockLlmProvider());
@@ -328,6 +358,167 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         Assert.Equal(
             "Narrate in a clear, measured, and informative tone. Keep a steady pace, articulate carefully, and use restrained emphasis on key ideas. Sound natural, not theatrical.",
             narrator.Instruction);
+    }
+
+    [Fact]
+    public async Task VoiceDesigner_StagesLanguageMatchedProfilesAndAppliesPerSpeaker()
+    {
+        var provider = new RecordingTtsProvider();
+        var (viewModel, store) = await CreateImportedViewModelAsync(
+            new MockLlmProvider(),
+            ttsProvider: provider);
+        await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
+        viewModel.BookLanguage = "English";
+        viewModel.DetectedGenre = "fantasy";
+
+        var narrator = Assert.Single(viewModel.VoiceAssignments, item => item.SpeakerId == "narrator");
+        var character = Assert.Single(viewModel.VoiceAssignments, item => item.SpeakerName == "Mary");
+        character.Language = "Spanish";
+        await WaitUntilAsync(async () =>
+            (await store.LoadVoiceProfilesAsync(
+                viewModel.RecentProjects.Single().Id,
+                provider.Capabilities.Name))
+            .GetValueOrDefault(character.SpeakerId)?.Language == "Spanish");
+        var savedBeforeProposals = character.Profile;
+
+        Assert.True(viewModel.CreateVoiceProposalsCommand.CanExecute(null));
+        viewModel.CreateVoiceProposalsCommand.Execute(null);
+
+        Assert.Equal(savedBeforeProposals, character.Profile);
+        Assert.Equal(savedBeforeProposals, (await store.LoadVoiceProfilesAsync(
+            viewModel.RecentProjects.Single().Id,
+            provider.Capabilities.Name))[character.SpeakerId]);
+        Assert.Equal("mock-warm", narrator.ProposedVoiceId);
+        Assert.Equal("mock-calm", character.ProposedVoiceId);
+        Assert.Equal("Spanish", character.ProposedLanguage);
+        Assert.Contains("verified native-language metadata", character.RecommendationMessage);
+        Assert.StartsWith("Narrate in an immersive and vivid tone.", narrator.ProposedInstruction);
+        Assert.StartsWith("Portray Mary as a distinct, believable character.", character.ProposedInstruction);
+        Assert.Contains("Use measured pacing", character.ProposedInstruction);
+        Assert.True(viewModel.PreviewVoiceProposalCommand.CanExecute(character));
+        Assert.False(character.IsProposalApplied);
+
+        await viewModel.PreviewVoiceProposalCommand.ExecuteAsync(character);
+
+        Assert.Equal(
+            new SpeechRequest(
+                "Hola, esta es una breve muestra de voz.",
+                "mock-calm",
+                "Spanish",
+                character.ProposedInstruction),
+            provider.LastRequest);
+        Assert.Equal(savedBeforeProposals, character.Profile);
+
+        await viewModel.ApplyVoiceProposalCommand.ExecuteAsync(character);
+
+        Assert.True(character.IsProposalApplied);
+        Assert.Equal("mock-calm", character.VoiceId);
+        Assert.Equal("Spanish", character.Language);
+        Assert.Equal(character.ProposedInstruction, character.Instruction);
+        Assert.Equal(character.ProposedProfile, (await store.LoadVoiceProfilesAsync(
+            viewModel.RecentProjects.Single().Id,
+            provider.Capabilities.Name))[character.SpeakerId]);
+        Assert.NotEqual(narrator.ProposedProfile, narrator.Profile);
+    }
+
+    [Fact]
+    public async Task VoiceDesigner_StagesVoiceDesignThenPersistsBaseCloneReferenceOnApply()
+    {
+        var provider = new RecordingVoiceDesignProvider();
+        var playback = new FakeAudioPlaybackService();
+        var (viewModel, store) = await CreateImportedViewModelAsync(
+            new MockLlmProvider(),
+            audioPlayback: playback,
+            ttsProvider: provider);
+        await viewModel.AnalyzeChapterCommand.ExecuteAsync(null);
+        viewModel.BookLanguage = "English";
+        viewModel.DetectedGenre = "fantasy";
+
+        var narrator = Assert.Single(viewModel.VoiceAssignments, item => item.SpeakerId == "narrator");
+        viewModel.CreateVoiceProposalsCommand.Execute(null);
+
+        Assert.True(viewModel.SupportsVoiceDesign);
+        Assert.Contains("fantasy audiobook", narrator.ProposedInstruction);
+        Assert.False(narrator.CanUseProposal);
+        Assert.Null(narrator.Profile.VoiceDesignReferenceAudio);
+        Assert.True(viewModel.GenerateVoiceDesignCommand.CanExecute(narrator));
+        var projectId = viewModel.RecentProjects.Single().Id;
+        var initiallySaved = (await store.LoadVoiceProfilesAsync(
+            projectId,
+            provider.Capabilities.Name))[narrator.SpeakerId];
+
+        await viewModel.GenerateVoiceDesignCommand.ExecuteAsync(narrator);
+
+        Assert.Equal("English", provider.LastDesignRequest!.Language);
+        Assert.Equal(narrator.ProposedInstruction, provider.LastDesignRequest.Instruction);
+        Assert.Equal(narrator.ProposedSampleText, provider.LastDesignRequest.Text);
+        Assert.True(narrator.CanUseProposal);
+        Assert.Equal(initiallySaved, (await store.LoadVoiceProfilesAsync(
+            projectId,
+            provider.Capabilities.Name))[narrator.SpeakerId]);
+        Assert.NotNull(playback.LastPlayedAudio);
+        Assert.True(viewModel.PreviewVoiceProposalCommand.CanExecute(narrator));
+
+        await viewModel.PreviewVoiceProposalCommand.ExecuteAsync(narrator);
+
+        Assert.Equal(QwenTtsProvider.DesignedVoiceId, provider.LastRequest!.VoiceId);
+        Assert.Equal(narrator.ProposedReferenceText, provider.LastRequest.VoiceDesignReferenceText);
+        Assert.Equal(
+            Convert.ToBase64String(narrator.ProposedReferenceAudio!),
+            Convert.ToBase64String(provider.LastRequest.VoiceDesignReferenceAudio!));
+
+        await viewModel.ApplyVoiceProposalCommand.ExecuteAsync(narrator);
+
+        var saved = (await store.LoadVoiceProfilesAsync(
+            projectId,
+            provider.Capabilities.Name))[narrator.SpeakerId];
+        Assert.Equal(narrator.ProposedReferenceText, saved.VoiceDesignReferenceText);
+        Assert.Equal(
+            Convert.ToBase64String(narrator.ProposedReferenceAudio!),
+            Convert.ToBase64String(saved.VoiceDesignReferenceAudio!));
+        Assert.True(narrator.IsProposalApplied);
+    }
+
+    [Fact]
+    public async Task VoiceDesigner_ExplainsMissingNativeMetadataAndKeepsEveryVoiceSelectable()
+    {
+        var provider = new RecordingTtsProvider(includeNativeLanguageMetadata: false);
+        var (viewModel, _) = await CreateImportedViewModelAsync(
+            new MockLlmProvider(),
+            ttsProvider: provider);
+        viewModel.BookLanguage = "English";
+        var narrator = Assert.Single(viewModel.VoiceAssignments);
+        var currentVoice = narrator.VoiceId;
+
+        viewModel.CreateVoiceProposalsCommand.Execute(null);
+
+        Assert.Contains("using a general direction", viewModel.VoiceDesignerStatus);
+        Assert.Equal(currentVoice, narrator.ProposedVoiceId);
+        Assert.Contains("provider supplies no verified native-language metadata", narrator.RecommendationMessage);
+        Assert.Equal(provider.VoiceIds, narrator.ProposedVoiceOptions);
+        narrator.ProposedVoiceSelection = "mock-bright";
+        Assert.Equal("mock-bright", narrator.ProposedVoiceId);
+        Assert.False(narrator.IsProposalApplied);
+        Assert.Equal(currentVoice, narrator.VoiceId);
+    }
+
+    [Fact]
+    public async Task VoiceDesigner_ExplainsWhenNoNativeVoiceMatchesTheEffectiveLanguage()
+    {
+        var provider = new RecordingTtsProvider(includeSpanishNativeMatch: false);
+        var (viewModel, _) = await CreateImportedViewModelAsync(
+            new MockLlmProvider(),
+            ttsProvider: provider);
+        viewModel.BookLanguage = "Spanish";
+        viewModel.DetectedGenre = "fantasy";
+        var narrator = Assert.Single(viewModel.VoiceAssignments);
+        var currentVoice = narrator.VoiceId;
+
+        viewModel.CreateVoiceProposalsCommand.Execute(null);
+
+        Assert.Contains("No voice recommendation is available for Spanish", narrator.RecommendationMessage);
+        Assert.Equal(currentVoice, narrator.ProposedVoiceId);
+        Assert.Equal(VoiceAssignmentItem.BookDefaultLanguageOption, narrator.ProposedLanguageSelection);
     }
 
     [Fact]
@@ -622,10 +813,17 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         ILlmProvider provider,
         string? exportPath = null,
         FakeAudioPlaybackService? audioPlayback = null,
-        IThemePreferenceService? themePreferences = null)
+        IThemePreferenceService? themePreferences = null,
+        ITtsProvider? ttsProvider = null)
     {
         var store = new SqliteProjectStore(Path.Combine(_directory, "projects.sqlite3"));
-        var viewModel = CreateViewModel(store, provider, exportPath, audioPlayback, themePreferences: themePreferences);
+        var viewModel = CreateViewModel(
+            store,
+            provider,
+            exportPath,
+            audioPlayback,
+            themePreferences: themePreferences,
+            ttsProvider: ttsProvider);
         await viewModel.InitializeAsync();
         await viewModel.ImportEpubCommand.ExecuteAsync(null);
         Assert.NotNull(viewModel.SelectedChapter);
@@ -773,6 +971,16 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
     private sealed class RecordingTtsProvider : ITtsProvider
     {
         private readonly MockTtsProvider _inner = new();
+        private readonly bool _includeNativeLanguageMetadata;
+        private readonly bool _includeSpanishNativeMatch;
+
+        public RecordingTtsProvider(
+            bool includeNativeLanguageMetadata = true,
+            bool includeSpanishNativeMatch = true)
+        {
+            _includeNativeLanguageMetadata = includeNativeLanguageMetadata;
+            _includeSpanishNativeMatch = includeSpanishNativeMatch;
+        }
 
         public ProviderCapabilities Capabilities => _inner.Capabilities;
 
@@ -781,6 +989,18 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
         public IReadOnlyList<string> Languages { get; } = ["English", "Spanish"];
 
         public bool SupportsVoiceInstructions => true;
+
+        public string? GetVoiceNativeLanguage(string voiceId) =>
+            !_includeNativeLanguageMetadata
+                ? null
+                : voiceId switch
+                {
+                    "mock-warm" => "English",
+                    "mock-calm" when _includeSpanishNativeMatch => "Spanish",
+                    "mock-bright" => "English",
+                    "mock-calm" => null,
+                    _ => null
+                };
 
         public SpeechRequest? LastRequest { get; private set; }
 
@@ -807,6 +1027,42 @@ public sealed class NarrativeViewModelTests : IAsyncLifetime
                     chapter.CurrentRole,
                     0.95,
                     "Test rationale.")).ToArray()));
+    }
+
+    private sealed class RecordingVoiceDesignProvider : ITtsProvider, IVoiceDesignProvider
+    {
+        private readonly byte[] _wavBytes = WavPcm.CreateSilence(TimeSpan.FromMilliseconds(250));
+
+        public ProviderCapabilities Capabilities { get; } =
+            new("Qwen3-TTS VoiceDesign test", IsMock: false, MaxContextCharacters: 700);
+
+        public IReadOnlyList<string> VoiceIds { get; } = [QwenTtsProvider.DesignedVoiceId];
+
+        public IReadOnlyList<string> Languages { get; } = ["English", "Spanish"];
+
+        public bool SupportsVoiceInstructions => true;
+
+        public bool SupportsVoiceDesign => true;
+
+        public VoiceDesignRequest? LastDesignRequest { get; private set; }
+
+        public SpeechRequest? LastRequest { get; private set; }
+
+        public Task<SpeechResult> GenerateVoiceDesignAsync(
+            VoiceDesignRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastDesignRequest = request;
+            return Task.FromResult(new SpeechResult(_wavBytes, TimeSpan.FromMilliseconds(250)));
+        }
+
+        public Task<SpeechResult> SynthesizeAsync(
+            SpeechRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            return Task.FromResult(new SpeechResult(_wavBytes, TimeSpan.FromMilliseconds(250)));
+        }
     }
 
     private sealed class CombinedEditProvider : ILlmProvider

@@ -38,8 +38,8 @@ public sealed class QwenTtsSetupService
         File.Exists(_workerScript);
 
     public string CurrentDescription => IsInstalled
-        ? "Qwen3-TTS is ready on the NVIDIA CUDA runtime. Model and synthesis remain local."
-        : $"Qwen3-TTS needs about {QwenTtsModelAssetManager.DownloadSize / (1024d * 1024d * 1024d):0.0} GiB of model files, a pinned CUDA runtime, and an NVIDIA GPU. Setup downloads only after you choose Set up Qwen.";
+        ? "Qwen3-TTS VoiceDesign and Base cloning are ready on the NVIDIA CUDA runtime. Models and synthesis remain local."
+        : $"Qwen3-TTS needs about {QwenTtsModelAssetManager.DownloadSize / (1024d * 1024d * 1024d):0.0} GiB for its pinned VoiceDesign and Base models, a CUDA runtime, and an NVIDIA GPU. Setup downloads only after you choose Set up Qwen.";
 
     public async Task InstallAsync(
         IProgress<QwenTtsSetupProgress>? progress,
@@ -110,11 +110,12 @@ public sealed class QwenTtsSetupService
                     Path.Combine(stagedRuntime, "qwen-runtime.json"),
                     JsonSerializer.Serialize(new
                     {
-                        Version = 1,
+                        Version = 2,
                         Python = "3.11-3.13",
                         PyTorch = "2.8.0+cu128",
                         QwenTts = "0.1.1",
-                        ModelRevision = QwenTtsModelAssetManager.ModelRevision
+                        VoiceDesignModelRevision = QwenTtsModelAssetManager.VoiceDesignModelRevision,
+                        BaseModelRevision = QwenTtsModelAssetManager.BaseModelRevision
                     }),
                     cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
@@ -147,15 +148,21 @@ public sealed class QwenTtsSetupService
 
     public ITtsProvider CreateProvider()
     {
-        if (!IsInstalled)
+        var models = _models.TryGetInstalledFiles();
+        if (!File.Exists(RuntimePythonPath) ||
+            !File.Exists(Path.Combine(_runtimeDirectory, "qwen-runtime.json")) ||
+            models is null ||
+            !File.Exists(_workerScript))
         {
-            throw new InvalidOperationException("Set up the Qwen model and CUDA runtime before selecting it.");
+            throw new InvalidOperationException(
+                "Set up the Qwen VoiceDesign and Base models and CUDA runtime before selecting it.");
         }
 
         return new QwenTtsProvider(new QwenTtsProcessRunner(
             RuntimePythonPath,
             _workerScript,
-            _models.InstallDirectory));
+            models.VoiceDesignDirectory,
+            models.BaseDirectory));
     }
 
     private string RuntimePythonPath => GetPythonExecutable(_runtimeDirectory);
@@ -164,7 +171,7 @@ public sealed class QwenTtsSetupService
     {
         var root = Path.GetPathRoot(_applicationDataDirectory)!;
         var drive = new DriveInfo(root);
-        var needed = QwenTtsModelAssetManager.DownloadSize + RuntimeAndTemporarySpace;
+        var needed = QwenTtsModelAssetManager.DownloadSize + RuntimeAndTemporarySpace + 1_000_000_000;
         if (drive.AvailableFreeSpace < needed)
         {
             throw new IOException(

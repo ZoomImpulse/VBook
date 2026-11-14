@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using VBook.Core.Providers;
@@ -9,26 +10,78 @@ namespace VBook.App.Services;
 public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
 {
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(3);
-    private static readonly TimeSpan SynthesisTimeout = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan InferenceTimeout = TimeSpan.FromMinutes(3);
     private const int MaximumProtocolLineLength = 16_000_000;
 
     private readonly string _pythonPath;
     private readonly string _workerScript;
-    private readonly string _modelDirectory;
+    private readonly string _voiceDesignModelDirectory;
+    private readonly string _baseModelDirectory;
     private readonly SemaphoreSlim _requestLock = new(1, 1);
     private readonly ConcurrentQueue<string> _diagnostics = new();
+    private readonly HashSet<string> _loadedVoiceClonePrompts = new(StringComparer.Ordinal);
     private Process? _process;
     private Task? _stderrDrain;
     private bool _disposed;
 
-    public QwenTtsProcessRunner(string pythonPath, string workerScript, string modelDirectory)
+    public QwenTtsProcessRunner(
+        string pythonPath,
+        string workerScript,
+        string voiceDesignModelDirectory,
+        string baseModelDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pythonPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(workerScript);
-        ArgumentException.ThrowIfNullOrWhiteSpace(modelDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(voiceDesignModelDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseModelDirectory);
         _pythonPath = Path.GetFullPath(pythonPath);
         _workerScript = Path.GetFullPath(workerScript);
-        _modelDirectory = Path.GetFullPath(modelDirectory);
+        _voiceDesignModelDirectory = Path.GetFullPath(voiceDesignModelDirectory);
+        _baseModelDirectory = Path.GetFullPath(baseModelDirectory);
+    }
+
+    public async Task<byte[]> GenerateVoiceDesignAsync(
+        VoiceDesignRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _requestLock.WaitAsync(cancellationToken);
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(InferenceTimeout);
+            await EnsureWorkerReadyAsync(timeout.Token);
+            _loadedVoiceClonePrompts.Clear();
+            var response = await SendRequestAsync(
+                new Dictionary<string, object?>
+                {
+                    ["command"] = "designVoice",
+                    ["text"] = request.Text,
+                    ["language"] = request.Language,
+                    ["instruction"] = request.Instruction
+                },
+                "audio",
+                timeout.Token);
+            return ReadAudio(response);
+        }
+        catch (OperationCanceledException)
+        {
+            await StopWorkerAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new TimeoutException("Qwen inference exceeded the three-minute request timeout.");
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException)
+        {
+            await StopWorkerAsync();
+            throw new InvalidOperationException(
+                $"The local Qwen worker stopped or returned an invalid response: {exception.Message} {GetDiagnostics()}",
+                exception);
+        }
+        finally
+        {
+            _requestLock.Release();
+        }
     }
 
     public async Task<byte[]> SynthesizeAsync(
@@ -41,63 +94,48 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(SynthesisTimeout);
+            timeout.CancelAfter(InferenceTimeout);
             await EnsureWorkerReadyAsync(timeout.Token);
-            var process = _process
-                ?? throw new InvalidOperationException("The Qwen worker is not running.");
-            var requestId = Guid.NewGuid().ToString("N");
-            var payload = JsonSerializer.Serialize(new
+            var referenceAudio = request.VoiceDesignReferenceAudio
+                ?? throw new InvalidOperationException("The Qwen voice profile has no VoiceDesign reference audio.");
+            var referenceText = request.VoiceDesignReferenceText
+                ?? throw new InvalidOperationException("The Qwen voice profile has no VoiceDesign reference text.");
+            var promptId = ComputeReferenceFingerprint(referenceAudio, referenceText);
+            if (!_loadedVoiceClonePrompts.Contains(promptId))
             {
-                command = "synthesize",
-                requestId,
-                text = request.Text,
-                voiceId = request.VoiceId,
-                language = request.Language,
-                instruction = request.Instruction
-            });
-            await process.StandardInput.WriteLineAsync(payload.AsMemory(), timeout.Token);
-            var response = await ReadProtocolMessageAsync(process, timeout.Token);
-            var type = response.TryGetProperty("type", out var responseTypeElement)
-                ? responseTypeElement.GetString()
-                : null;
-            if (type == "error")
-            {
-                var message = response.TryGetProperty("message", out var messageElement)
-                    ? messageElement.GetString()
+                var promptResponse = await SendRequestAsync(
+                    new Dictionary<string, object?>
+                    {
+                        ["command"] = "loadVoiceClonePrompt",
+                        ["referenceAudioBase64"] = Convert.ToBase64String(referenceAudio),
+                        ["referenceText"] = referenceText,
+                        ["promptId"] = promptId
+                    },
+                    "promptLoaded",
+                    timeout.Token);
+                var returnedPromptId = promptResponse.TryGetProperty("promptId", out var promptIdElement)
+                    ? promptIdElement.GetString()
                     : null;
-                var trace = response.TryGetProperty("traceback", out var traceElement)
-                    ? traceElement.GetString()
-                    : null;
-                throw new InvalidOperationException(
-                    $"Qwen local inference failed: {message}{Environment.NewLine}{trace}");
+                if (!string.Equals(returnedPromptId, promptId, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The Qwen worker loaded an unexpected voice-clone prompt.");
+                }
+
+                _loadedVoiceClonePrompts.Add(promptId);
             }
 
-            var responseId = response.TryGetProperty("requestId", out var idElement)
-                ? idElement.GetString()
-                : null;
-            if (!string.Equals(responseId, requestId, StringComparison.Ordinal))
-            {
-                var responseType = response.TryGetProperty("type", out var typeElement)
-                    ? typeElement.GetString()
-                    : "<missing>";
-                throw new InvalidDataException(
-                    $"The Qwen worker returned request '{responseId ?? "<missing>"}' of type '{responseType}', " +
-                    $"expected request '{requestId}'.");
-            }
-
-            if (type != "audio" || !response.TryGetProperty("wavBase64", out var audioElement))
-            {
-                throw new InvalidDataException("The Qwen worker returned an invalid audio response.");
-            }
-
-            try
-            {
-                return Convert.FromBase64String(audioElement.GetString()!);
-            }
-            catch (FormatException exception)
-            {
-                throw new InvalidDataException("The Qwen worker returned malformed WAV data.", exception);
-            }
+            var response = await SendRequestAsync(
+                new Dictionary<string, object?>
+                {
+                    ["command"] = "synthesize",
+                    ["text"] = request.Text,
+                    ["voiceId"] = request.VoiceId,
+                    ["language"] = request.Language,
+                    ["voiceClonePromptId"] = promptId
+                },
+                "audio",
+                timeout.Token);
+            return ReadAudio(response);
         }
         catch (OperationCanceledException)
         {
@@ -138,6 +176,66 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
         }
     }
 
+    private async Task<JsonElement> SendRequestAsync(
+        Dictionary<string, object?> fields,
+        string expectedType,
+        CancellationToken cancellationToken)
+    {
+        var process = _process
+            ?? throw new InvalidOperationException("The Qwen worker is not running.");
+        var requestId = Guid.NewGuid().ToString("N");
+        fields["requestId"] = requestId;
+        await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(fields).AsMemory(), cancellationToken);
+        var response = await ReadProtocolMessageAsync(process, cancellationToken);
+        var type = response.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
+        if (type == "error")
+        {
+            var message = response.TryGetProperty("message", out var messageElement)
+                ? messageElement.GetString()
+                : null;
+            var trace = response.TryGetProperty("traceback", out var traceElement)
+                ? traceElement.GetString()
+                : null;
+            throw new InvalidOperationException(
+                $"Qwen local inference failed: {message}{Environment.NewLine}{trace}");
+        }
+
+        var responseId = response.TryGetProperty("requestId", out var idElement)
+            ? idElement.GetString()
+            : null;
+        if (!string.Equals(responseId, requestId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"The Qwen worker returned request '{responseId ?? "<missing>"}' of type '{type ?? "<missing>"}', " +
+                $"expected request '{requestId}'.");
+        }
+
+        if (type != expectedType)
+        {
+            throw new InvalidDataException($"The Qwen worker returned an invalid '{expectedType}' response.");
+        }
+
+        return response;
+    }
+
+    private static byte[] ReadAudio(JsonElement response)
+    {
+        if (!response.TryGetProperty("wavBase64", out var audioElement) ||
+            audioElement.GetString() is not { } audioBase64)
+        {
+            throw new InvalidDataException("The Qwen worker returned an audio response without WAV data.");
+        }
+
+        try
+        {
+            return Convert.FromBase64String(audioBase64);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidDataException("The Qwen worker returned malformed WAV data.", exception);
+        }
+    }
+
     private async Task EnsureWorkerReadyAsync(CancellationToken cancellationToken)
     {
         if (_process is { HasExited: false })
@@ -145,9 +243,13 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
             return;
         }
 
-        if (!File.Exists(_pythonPath) || !File.Exists(_workerScript) || !Directory.Exists(_modelDirectory))
+        if (!File.Exists(_pythonPath) ||
+            !File.Exists(_workerScript) ||
+            !Directory.Exists(_voiceDesignModelDirectory) ||
+            !Directory.Exists(_baseModelDirectory))
         {
-            throw new InvalidOperationException("The installed Qwen Python runtime, worker, or model is missing.");
+            throw new InvalidOperationException(
+                "The installed Qwen Python runtime, worker, VoiceDesign model, or Base model is missing.");
         }
 
         var startInfo = new ProcessStartInfo(_pythonPath)
@@ -163,7 +265,8 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
             StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
         };
         startInfo.ArgumentList.Add(_workerScript);
-        startInfo.ArgumentList.Add(_modelDirectory);
+        startInfo.ArgumentList.Add(_voiceDesignModelDirectory);
+        startInfo.ArgumentList.Add(_baseModelDirectory);
         startInfo.Environment["HF_HUB_OFFLINE"] = "1";
         startInfo.Environment["TRANSFORMERS_OFFLINE"] = "1";
         startInfo.Environment["HF_HUB_DISABLE_TELEMETRY"] = "1";
@@ -185,7 +288,7 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
             if (type == "startupError")
             {
                 throw new InvalidOperationException(
-                    $"Qwen could not load its CUDA model: {ready.GetProperty("message").GetString()}. " +
+                    $"Qwen could not initialize its CUDA worker: {ready.GetProperty("message").GetString()}. " +
                     GetDiagnostics());
             }
 
@@ -203,7 +306,7 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             await StopWorkerAsync();
-            throw new TimeoutException("The Qwen model did not load within three minutes.");
+            throw new TimeoutException("The Qwen worker did not initialize within three minutes.");
         }
         catch
         {
@@ -242,13 +345,20 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
     {
         while (await process.StandardError.ReadLineAsync() is { } line)
         {
-            if (line.Length == 0)
+            if (line.Length > 0)
             {
-                continue;
+                RecordDiagnostic(line);
             }
-
-            RecordDiagnostic(line);
         }
+    }
+
+    private static string ComputeReferenceFingerprint(byte[] audio, string text)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(BitConverter.GetBytes(audio.Length));
+        hash.AppendData(audio);
+        hash.AppendData(Encoding.UTF8.GetBytes(text));
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     private void RecordDiagnostic(string line)
@@ -264,6 +374,7 @@ public sealed class QwenTtsProcessRunner : IQwenTtsProcessRunner
     {
         var process = _process;
         _process = null;
+        _loadedVoiceClonePrompts.Clear();
         if (process is null)
         {
             return;

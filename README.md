@@ -43,10 +43,16 @@ never modified.
   chapter markers using FFmpeg. Qwen3-TTS is the default speech engine, with
   optional Kokoro and Piper alternatives. Select a required book-wide speech
   language; individual voices inherit it by default and can use a supported
-  language override. The selection is saved with the project. Each speaker can
-  have a voice and (with Qwen) expressive direction. After analyzing book structure,
-  use **Suggest** to generate an editable direction tailored to the detected genre
-  and narrator or character role. Mock tones are used only by tests and
+  language override. The selection is saved with the project. **Produce → Voice
+  Designer** stages editable per-speaker voice profiles using the speaker role
+  and analyzed genre when available. For Qwen, describe each voice and choose
+  sample text in the effective spoken language; generate a VoiceDesign reference,
+  preview the Base-model clone, then explicitly apply it. The generated reference
+  and its text are saved with the project profile. Other providers recommend a
+  voice only when verified native-language metadata matches the effective spoken
+  language; all provider voices remain manually selectable. Voice descriptions
+  remain in the model's preferred instruction language rather than being
+  translated with the spoken language. Mock tones are used only by tests and
   development code.
 - In-app playback uses OpenAL Soft through Silk.NET. The bundled OpenAL Soft
   native library is licensed under LGPL-2.0-or-later; distributions must retain
@@ -103,12 +109,14 @@ downloaded before using Structure or Narrative analysis.
 Qwen3-TTS is selected by default. In **Produce → Speech engine**, choose **Set
 up Qwen3-TTS** to install its isolated Python runtime and model. This setup
 requires 64-bit Python 3.11–3.13 (or set `VBOOK_QWEN_PYTHON` to `python.exe`),
-an NVIDIA GPU with working CUDA drivers, and about 10.5 GiB of free disk space.
+an NVIDIA GPU with working CUDA drivers, and about 15 GiB of free disk space.
 The app installs pinned CUDA-enabled PyTorch/Qwen packages and downloads the
-pinned Qwen3-TTS 1.7B CustomVoice model (about 4.5 GB). Setup is explicit and
-cancellable. The model is Apache-2.0 licensed. Synthesis then runs locally on
+pinned Qwen3-TTS 1.7B VoiceDesign and Base models (about 8.4 GiB combined).
+Setup is explicit and cancellable. The models are Apache-2.0 licensed. Voice
+Design generates a short reference sample from a natural-language voice
+description; the Base model then reuses that reference for cloned speech.
+References remain in the local project database, and synthesis runs locally on
 the GPU; generated text and audio are not sent to a cloud speech service.
-Qwen supports per-speaker voice, language, and optional expressive direction.
 
 Kokoro is a smaller CPU alternative. Choose **Kokoro** in the speech-engine
 selector and choose **Download Kokoro model** to install its quantized v1.0

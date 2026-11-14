@@ -4,7 +4,7 @@ using VBook.Core.Providers;
 
 namespace VBook.App.Services;
 
-public sealed class LocalTtsProviderService : ITtsProvider, INotifyPropertyChanged, IDisposable
+public sealed class LocalTtsProviderService : ITtsProvider, IVoiceDesignProvider, INotifyPropertyChanged, IDisposable
 {
     public const string KokoroProviderId = "Kokoro";
     public const string PiperProviderId = "Piper";
@@ -58,6 +58,9 @@ public sealed class LocalTtsProviderService : ITtsProvider, INotifyPropertyChang
         _currentProvider.GetVoiceNativeLanguage(voiceId);
 
     public bool SupportsVoiceInstructions => _currentProvider.SupportsVoiceInstructions;
+
+    public bool SupportsVoiceDesign =>
+        _currentProvider is IVoiceDesignProvider { SupportsVoiceDesign: true };
 
     public bool IsKokoroInstalled => _kokoroAssets.IsInstalled;
 
@@ -133,6 +136,14 @@ public sealed class LocalTtsProviderService : ITtsProvider, INotifyPropertyChang
         SpeechRequest request,
         CancellationToken cancellationToken) =>
         _currentProvider.SynthesizeAsync(request, cancellationToken);
+
+    public Task<SpeechResult> GenerateVoiceDesignAsync(
+        VoiceDesignRequest request,
+        CancellationToken cancellationToken) =>
+        _currentProvider is IVoiceDesignProvider { SupportsVoiceDesign: true } designer
+            ? designer.GenerateVoiceDesignAsync(request, cancellationToken)
+            : throw new InvalidOperationException(
+                $"The selected speech provider '{SelectedProviderId}' does not support voice design.");
 
     public void Dispose()
     {
@@ -215,6 +226,8 @@ public sealed class LocalTtsProviderService : ITtsProvider, INotifyPropertyChang
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedProviderId)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Capabilities)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VoiceIds)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SupportsVoiceInstructions)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SupportsVoiceDesign)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CurrentProviderDescription)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsKokoroInstalled)));
     }

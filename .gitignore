@@ -17,6 +17,8 @@ venv/
 models/
 audio/
 projects/
+!src/VBook.Core/Projects/
+!src/VBook.Core/Projects/*.cs
 *.sqlite
 *.sqlite3
 *.db

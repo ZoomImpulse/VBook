@@ -65,11 +65,20 @@ public sealed record SpeechRequest(
     string Text,
     string VoiceId,
     string Language,
-    string Instruction = "");
+    string Instruction = "",
+    byte[]? VoiceDesignReferenceAudio = null,
+    string? VoiceDesignReferenceText = null);
 
-public sealed record SpeechVoiceProfile(string VoiceId, string Language, string Instruction);
+public sealed record SpeechVoiceProfile(
+    string VoiceId,
+    string Language,
+    string Instruction,
+    byte[]? VoiceDesignReferenceAudio = null,
+    string? VoiceDesignReferenceText = null);
 
 public sealed record SpeechResult(byte[] WavBytes, TimeSpan Duration);
+
+public sealed record VoiceDesignRequest(string Text, string Language, string Instruction);
 
 public interface ITtsProvider
 {
@@ -81,4 +90,13 @@ public interface ITtsProvider
     bool SupportsVoiceInstructions => false;
 
     Task<SpeechResult> SynthesizeAsync(SpeechRequest request, CancellationToken cancellationToken);
+}
+
+public interface IVoiceDesignProvider
+{
+    bool SupportsVoiceDesign { get; }
+
+    Task<SpeechResult> GenerateVoiceDesignAsync(
+        VoiceDesignRequest request,
+        CancellationToken cancellationToken);
 }

@@ -3,6 +3,7 @@ using VBook.Core.Books;
 using VBook.Core.Projects;
 using VBook.Core.Providers;
 using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace VBook.Core.Generation;
 
@@ -171,7 +172,13 @@ public sealed class AudioGenerationService
         {
             cancellationToken.ThrowIfCancellationRequested();
             var result = await _provider.SynthesizeAsync(
-                new SpeechRequest(part, profile.VoiceId, profile.Language, profile.Instruction),
+                new SpeechRequest(
+                    part,
+                    profile.VoiceId,
+                    profile.Language,
+                    profile.Instruction,
+                    profile.VoiceDesignReferenceAudio,
+                    profile.VoiceDesignReferenceText),
                 cancellationToken);
             audioParts.Add(result.WavBytes);
             duration += result.Duration;
@@ -202,7 +209,10 @@ public sealed class AudioGenerationService
                 speakerId = profile.Key,
                 profile.Value.VoiceId,
                 profile.Value.Language,
-                profile.Value.Instruction
+                profile.Value.Instruction,
+                profile.Value.VoiceDesignReferenceText,
+                voiceDesignReferenceHash = ComputeVoiceDesignReferenceHash(
+                    profile.Value.VoiceDesignReferenceAudio)
             });
         return TextFingerprint.Compute(JsonSerializer.Serialize(new
         {
@@ -339,7 +349,20 @@ public sealed class AudioGenerationService
     }
 
     private static string ComputeProfileHash(SpeechVoiceProfile profile) =>
-        TextFingerprint.Compute(JsonSerializer.Serialize(profile));
+        TextFingerprint.Compute(JsonSerializer.Serialize(new
+        {
+            profile.VoiceId,
+            profile.Language,
+            profile.Instruction,
+            profile.VoiceDesignReferenceText,
+            voiceDesignReferenceHash = ComputeVoiceDesignReferenceHash(
+                profile.VoiceDesignReferenceAudio)
+        }));
+
+    private static string? ComputeVoiceDesignReferenceHash(byte[]? referenceAudio) =>
+        referenceAudio is null
+            ? null
+            : Convert.ToHexString(SHA256.HashData(referenceAudio));
 
     private static IReadOnlyList<string> SplitText(string text, int maxLength)
     {

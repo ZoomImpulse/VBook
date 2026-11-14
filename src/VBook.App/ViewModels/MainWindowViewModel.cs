@@ -105,6 +105,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SetupQwenCommand))]
     [NotifyCanExecuteChangedFor(nameof(PreviewVoiceCommand))]
     [NotifyCanExecuteChangedFor(nameof(SuggestVoiceInstructionCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CreateVoiceProposalsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ApplyVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceProposalCommand))]
     [NotifyPropertyChangedFor(nameof(CanChangeTtsProvider))]
     [NotifyPropertyChangedFor(nameof(CanSetupQwen))]
     private bool _isBusy;
@@ -279,6 +282,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(CanChangeNarrationMode));
         OnPropertyChanged(nameof(CanEditNarrationContent));
         OnPropertyChanged(nameof(ChapterAnalysisGuidance));
+        CreateVoiceProposalsCommand.NotifyCanExecuteChanged();
+        ApplyVoiceProposalCommand.NotifyCanExecuteChanged();
+        PreviewVoiceProposalCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnIsAnalyzingStructureChanged(bool value)

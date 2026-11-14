@@ -425,9 +425,11 @@ public sealed class AudioGenerationTests
             var provider = new RecordingTtsProvider();
             var service = new AudioGenerationService(store, provider);
             var assignments = new Dictionary<string, string> { ["narrator"] = "mock-warm" };
+            var referenceAudio = WavPcm.CreateSilence(TimeSpan.FromMilliseconds(250));
+            const string referenceText = "This is the original voice sample.";
             var firstProfile = new Dictionary<string, SpeechVoiceProfile>
             {
-                ["narrator"] = new("mock-warm", "English", "Speak warmly.")
+                ["narrator"] = new("mock-warm", "English", "Speak warmly.", referenceAudio, referenceText)
             };
 
             var first = await service.GenerateChapterAsync(
@@ -443,11 +445,32 @@ public sealed class AudioGenerationTests
             var changed = await service.GenerateChapterAsync(
                 projectId, "c1", text, analysis, NarrationMode.SingleNarrator, assignments,
                 null, CancellationToken.None, voiceProfiles: changedProfile, defaultLanguage: "English");
+            var changedReferenceAudio = WavPcm.CreateSilence(TimeSpan.FromMilliseconds(300));
+            var changedReferenceProfile = new Dictionary<string, SpeechVoiceProfile>
+            {
+                ["narrator"] = new(
+                    "mock-warm",
+                    "German",
+                    "Speak softly.",
+                    changedReferenceAudio,
+                    "This is the updated voice sample.")
+            };
+            var changedReference = await service.GenerateChapterAsync(
+                projectId, "c1", text, analysis, NarrationMode.SingleNarrator, assignments,
+                null, CancellationToken.None, voiceProfiles: changedReferenceProfile, defaultLanguage: "English");
 
             Assert.NotEqual(first.Job.Id, changed.Job.Id);
-            Assert.Equal(2, provider.Requests.Count);
+            Assert.NotEqual(changed.Job.Id, changedReference.Job.Id);
+            Assert.Equal(3, provider.Requests.Count);
             Assert.Equal(("English", "Speak warmly."), (provider.Requests[0].Language, provider.Requests[0].Instruction));
             Assert.Equal(("German", "Speak softly."), (provider.Requests[1].Language, provider.Requests[1].Instruction));
+            Assert.Equal(referenceText, provider.Requests[0].VoiceDesignReferenceText);
+            Assert.Equal(
+                Convert.ToBase64String(referenceAudio),
+                Convert.ToBase64String(provider.Requests[0].VoiceDesignReferenceAudio!));
+            Assert.Equal(
+                Convert.ToBase64String(changedReferenceAudio),
+                Convert.ToBase64String(provider.Requests[2].VoiceDesignReferenceAudio!));
         }
         finally
         {

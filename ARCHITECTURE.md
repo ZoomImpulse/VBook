@@ -45,12 +45,18 @@ book. The UI remains useful without any AI models.
    applied only to the corresponding narration segment when accepted.
 6. Validated direction decisions and accepted spoken-wording edits are sent to a
    TTS provider, with generated segments cached and job state persisted for
-   recovery. Qwen3-TTS is the default local provider and uses a pinned CUDA
-   runtime and verified, explicitly downloaded model. Voice profiles are stored
-   per project, provider, and speaker; Qwen profiles include language and
-   expressive direction. Kokoro is an explicitly downloaded sherpa-onnx CPU
+   recovery. Qwen3-TTS is the default local provider and uses pinned CUDA
+   runtime, VoiceDesign, and Base models. Voice profiles are stored per project,
+   provider, and speaker; Qwen profiles persist their voice description, spoken
+   language, generated reference WAV, and exact reference text. The VoiceDesign
+   model creates the staged reference; the Base model uses it for consistent
+   clone synthesis. Kokoro is an explicitly downloaded sherpa-onnx CPU
    alternative, and Piper can be selected when its executable and voice files
-   are configured. Mock tone synthesis is limited to tests and development code.
+   are configured. Other providers receive native-language recommendations only
+   when verified metadata matches the effective spoken language. Proposals are
+   applied per speaker, and written directions remain in the provider's
+   instruction language. Mock tone synthesis is limited to tests and development
+   code.
 
 ## Boundaries and reliability
 
@@ -110,8 +116,9 @@ book. The UI remains useful without any AI models.
 - `NarrationMode` is stored on the project and on each analysis, so changing a
   project's single-narrator/multi-voice setting invalidates an analysis made in
   the other mode. TTS voice profiles are stored per project, provider, and
-  speaker, so provider-specific voices and Qwen language/style settings remain
-  independent.
+  speaker, so provider-specific voices and Qwen language/style/reference data
+  remain independent. Existing voice-profile rows migrate with null reference
+  fields; non-Qwen profiles and older Qwen profiles remain readable.
 
 ## Audio generation (stage 4)
 
@@ -125,8 +132,11 @@ book. The UI remains useful without any AI models.
   the configured local Piper CLI and validates its WAV output.
 - Qwen installation is opt-in. The app creates an isolated Python 3.11–3.13
   environment, installs pinned CUDA-enabled PyTorch/Qwen packages, verifies
-  CUDA, and downloads the pinned Qwen3-TTS 1.7B CustomVoice model with integrity
-  checks. Qwen inference is offline after setup and requires an NVIDIA CUDA GPU.
+  CUDA, and downloads pinned Qwen3-TTS 1.7B VoiceDesign and Base models with
+  file-size and hash checks. The worker loads one model at a time, switches from
+  VoiceDesign reference generation to Base voice cloning, and caches clone
+  prompts only for the lifetime of the local worker. Qwen inference is offline
+  after setup and requires an NVIDIA CUDA GPU.
 - Kokoro model installation is opt-in. The app downloads a pinned sherpa-onnx
   release archive, checks the published SHA-256 digest, safely extracts the
   required model files into local application data, and only then activates the

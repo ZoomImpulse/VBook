@@ -49,6 +49,8 @@ public sealed partial class MainWindowViewModel
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(PreviewVoiceCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(GenerateVoiceDesignCommand))]
     private bool _isPreviewingVoice;
 
     [ObservableProperty]
@@ -59,10 +61,15 @@ public sealed partial class MainWindowViewModel
     [NotifyCanExecuteChangedFor(nameof(OpenRecentProjectCommand))]
     [NotifyCanExecuteChangedFor(nameof(DeleteRecentProjectCommand))]
     [NotifyCanExecuteChangedFor(nameof(ConfirmDeleteProjectCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CreateVoiceProposalsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ApplyVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(GenerateVoiceDesignCommand))]
     [NotifyPropertyChangedFor(nameof(CanSelectChapter))]
     [NotifyPropertyChangedFor(nameof(CanChangeNarrationMode))]
     [NotifyPropertyChangedFor(nameof(ChapterAnalysisGuidance))]
     [NotifyCanExecuteChangedFor(nameof(PreviewVoiceCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceProposalCommand))]
     private bool _isAnalyzing;
 
     [ObservableProperty]
@@ -102,10 +109,15 @@ public sealed partial class MainWindowViewModel
     [NotifyPropertyChangedFor(nameof(CanSelectChapter))]
     [NotifyPropertyChangedFor(nameof(CanChangeNarrationMode))]
     [NotifyCanExecuteChangedFor(nameof(DownloadKokoroCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SetupQwenCommand))]
     [NotifyPropertyChangedFor(nameof(CanChangeTtsProvider))]
     [NotifyPropertyChangedFor(nameof(ChapterAnalysisGuidance))]
     [NotifyCanExecuteChangedFor(nameof(PreviewVoiceCommand))]
     [NotifyCanExecuteChangedFor(nameof(SuggestVoiceInstructionCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CreateVoiceProposalsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ApplyVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(GenerateVoiceDesignCommand))]
     private bool _isGenerating;
 
     [ObservableProperty]
@@ -142,6 +154,10 @@ public sealed partial class MainWindowViewModel
     [NotifyCanExecuteChangedFor(nameof(GenerateBookCommand))]
     [NotifyCanExecuteChangedFor(nameof(PreviewVoiceCommand))]
     [NotifyCanExecuteChangedFor(nameof(SuggestVoiceInstructionCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CreateVoiceProposalsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ApplyVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(GenerateVoiceDesignCommand))]
     private bool _isAnalyzingStructure;
 
     [ObservableProperty]
@@ -156,13 +172,21 @@ public sealed partial class MainWindowViewModel
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasDetectedGenre))]
     [NotifyCanExecuteChangedFor(nameof(SuggestVoiceInstructionCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CreateVoiceProposalsCommand))]
     private string _detectedGenre = string.Empty;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(GenerateChapterCommand))]
     [NotifyCanExecuteChangedFor(nameof(GenerateBookCommand))]
     [NotifyCanExecuteChangedFor(nameof(PreviewVoiceCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CreateVoiceProposalsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ApplyVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PreviewVoiceProposalCommand))]
+    [NotifyCanExecuteChangedFor(nameof(GenerateVoiceDesignCommand))]
     private string _bookLanguage = string.Empty;
+
+    [ObservableProperty]
+    private string _voiceDesignerStatus = "Choose a book language and propose profiles. Analyze book structure for genre-aware directions.";
 
     public ObservableCollection<SegmentItem> Segments { get; } = [];
 
@@ -219,6 +243,13 @@ public sealed partial class MainWindowViewModel
 
     public IReadOnlyList<string> TtsLanguages => _ttsProvider.Languages;
 
+    public bool SupportsVoiceDesign =>
+        _ttsProvider is IVoiceDesignProvider { SupportsVoiceDesign: true };
+
+    public string VoiceDesignerDescription => SupportsVoiceDesign
+        ? "Design a voice from an editable description and a sample spoken in the effective profile language. Suggested descriptions are in English and are not auto-translated; the reference stays staged until applied, and preview uses Qwen Base voice cloning."
+        : "Voice matches use verified native-language metadata. Every provider voice remains available for manual selection. Analyzed book genre adds tailored direction; otherwise a general direction is staged.";
+
     partial void OnBookLanguageChanged(string value)
     {
         ClearGeneratedBookAudio();
@@ -226,12 +257,28 @@ public sealed partial class MainWindowViewModel
         GenerateChapterCommand.NotifyCanExecuteChanged();
         GenerateBookCommand.NotifyCanExecuteChanged();
         PreviewVoiceCommand.NotifyCanExecuteChanged();
+        CreateVoiceProposalsCommand.NotifyCanExecuteChanged();
+        ApplyVoiceProposalCommand.NotifyCanExecuteChanged();
+        PreviewVoiceProposalCommand.NotifyCanExecuteChanged();
+        GenerateVoiceDesignCommand.NotifyCanExecuteChanged();
+        if (SupportsVoiceDesign)
+        {
+            foreach (var assignment in VoiceAssignments.Where(item =>
+                         item.HasProposal && string.IsNullOrWhiteSpace(item.ProposedLanguage)))
+            {
+                assignment.ProposedSampleText = GetVoicePreviewText(value);
+            }
+        }
+
         if (!_loadingProjectSettings && _projectId is not null)
         {
             ScheduleAutosave();
             _ = RefreshChapterQueueForLanguageChangeAsync();
         }
     }
+
+    partial void OnDetectedGenreChanged(string value) =>
+        CreateVoiceProposalsCommand.NotifyCanExecuteChanged();
 
     private async Task RefreshChapterQueueForLanguageChangeAsync()
     {
@@ -325,6 +372,8 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(TtsProviderDescription));
         OnPropertyChanged(nameof(TtsLanguages));
         OnPropertyChanged(nameof(SupportsVoiceInstructions));
+        OnPropertyChanged(nameof(SupportsVoiceDesign));
+        OnPropertyChanged(nameof(VoiceDesignerDescription));
         OnPropertyChanged(nameof(CurrentTtsProviderId));
         OnPropertyChanged(nameof(IsQwenSetupRequired));
         OnPropertyChanged(nameof(CanSetupQwen));
@@ -336,6 +385,10 @@ public sealed partial class MainWindowViewModel
         DownloadKokoroCommand.NotifyCanExecuteChanged();
         SetupQwenCommand.NotifyCanExecuteChanged();
         PreviewVoiceCommand.NotifyCanExecuteChanged();
+        CreateVoiceProposalsCommand.NotifyCanExecuteChanged();
+        ApplyVoiceProposalCommand.NotifyCanExecuteChanged();
+        PreviewVoiceProposalCommand.NotifyCanExecuteChanged();
+        GenerateVoiceDesignCommand.NotifyCanExecuteChanged();
 
         if (e.PropertyName == nameof(LocalTtsProviderService.SelectedProviderId) &&
             !IsBusy &&
@@ -641,7 +694,7 @@ public sealed partial class MainWindowViewModel
 
     private bool CanGenerateBook() =>
         !IsBusy && !IsAnalyzing && !IsGenerating && !IsAnalyzingStructure && Book is not null &&
-        _ttsProvider.VoiceIds.Count > 0 && HasValidVoiceLanguages() &&
+        _ttsProvider.VoiceIds.Count > 0 && HasValidVoiceLanguages() && HasReadyVoiceDesigns() &&
         Chapters.Any(chapter => chapter.Role != SectionRole.Skip);
 
     private bool CanExportBookAudio() => !IsBusy && !IsGenerating && _generatedBookAudio is not null;
@@ -1176,14 +1229,38 @@ public sealed partial class MainWindowViewModel
     }
 
     [RelayCommand(CanExecute = nameof(CanPreviewVoice), IncludeCancelCommand = true)]
-    private async Task PreviewVoiceAsync(
+    private Task PreviewVoiceAsync(
         VoiceAssignmentItem assignment,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(assignment);
-        if (!_ttsProvider.VoiceIds.Contains(assignment.VoiceId, StringComparer.Ordinal))
+        return PreviewVoiceProfileAsync(assignment.SpeakerName, assignment.Profile, cancellationToken);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanPreviewVoiceProposal), IncludeCancelCommand = true)]
+    private Task PreviewVoiceProposalAsync(
+        VoiceAssignmentItem assignment,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        return PreviewVoiceProfileAsync(assignment.SpeakerName, assignment.ProposedProfile, cancellationToken);
+    }
+
+    private async Task PreviewVoiceProfileAsync(
+        string speakerName,
+        SpeechVoiceProfile profile,
+        CancellationToken cancellationToken)
+    {
+        if (!_ttsProvider.VoiceIds.Contains(profile.VoiceId, StringComparer.Ordinal))
         {
-            GenerationStatus = $"Voice '{assignment.VoiceId}' is unavailable from {_ttsProvider.Capabilities.Name}.";
+            GenerationStatus = $"Voice '{profile.VoiceId}' is unavailable from {_ttsProvider.Capabilities.Name}.";
+            return;
+        }
+
+        if (SupportsVoiceDesign &&
+            (profile.VoiceDesignReferenceAudio is null || string.IsNullOrWhiteSpace(profile.VoiceDesignReferenceText)))
+        {
+            GenerationStatus = $"Generate and apply a VoiceDesign reference for {speakerName} before previewing it.";
             return;
         }
 
@@ -1197,21 +1274,25 @@ public sealed partial class MainWindowViewModel
                 ResetAudioPlayback();
             }
 
-            var language = ResolveEffectiveVoiceLanguage(assignment);
+            var language = ResolveEffectiveVoiceLanguage(profile.VoiceId, profile.Language);
             if (language is null)
             {
                 GenerationStatus =
-                    $"Select a book language supported by {assignment.VoiceId}, or choose a supported language for this voice.";
+                    $"Select a book language or a supported language override for {profile.VoiceId}.";
                 return;
             }
 
-            var instruction = _ttsProvider.SupportsVoiceInstructions
-                ? assignment.Instruction
-                : string.Empty;
+            var instruction = _ttsProvider.SupportsVoiceInstructions ? profile.Instruction : string.Empty;
             var text = GetVoicePreviewText(language);
-            GenerationStatus = $"Generating a {language} voice preview for {assignment.SpeakerName}…";
+            GenerationStatus = $"Generating a {language} voice preview for {speakerName}…";
             var result = await _ttsProvider.SynthesizeAsync(
-                new SpeechRequest(text, assignment.VoiceId, language, instruction),
+                new SpeechRequest(
+                    text,
+                    profile.VoiceId,
+                    language,
+                    instruction,
+                    profile.VoiceDesignReferenceAudio,
+                    profile.VoiceDesignReferenceText),
                 cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -1221,11 +1302,11 @@ public sealed partial class MainWindowViewModel
             UpdateAudioPlaybackTime();
             _audioPlaybackTimer.Start();
             PlayGeneratedAudioCommand.NotifyCanExecuteChanged();
-            GenerationStatus = $"Playing the {language} voice preview for {assignment.SpeakerName}.";
+            GenerationStatus = $"Playing the {language} voice preview for {speakerName}.";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            GenerationStatus = $"Voice preview for {assignment.SpeakerName} was canceled.";
+            GenerationStatus = $"Voice preview for {speakerName} was canceled.";
         }
         catch (Exception exception)
         {
@@ -1253,6 +1334,237 @@ public sealed partial class MainWindowViewModel
             _ => "Hello, this is a short voice preview."
         };
 
+    [RelayCommand(CanExecute = nameof(CanCreateVoiceProposals))]
+    private void CreateVoiceProposals()
+    {
+        foreach (var assignment in VoiceAssignments)
+        {
+            var effectiveLanguage = GetProfileEffectiveLanguage(assignment.Language);
+            var isVoiceDesign = SupportsVoiceDesign;
+            var recommendedVoice = isVoiceDesign ? null : FindRecommendedVoice(effectiveLanguage);
+            var voiceId = isVoiceDesign
+                ? _ttsProvider.VoiceIds[0]
+                : recommendedVoice ?? assignment.VoiceId;
+            var recommendation = isVoiceDesign
+                ? "Qwen VoiceDesign creates a custom voice from this description; no preset voice recommendation applies."
+                : BuildVoiceRecommendationMessage(effectiveLanguage, recommendedVoice);
+            var instruction = _ttsProvider.SupportsVoiceInstructions
+                ? CreateSuggestedVoiceInstruction(assignment, DetectedGenre)
+                : string.Empty;
+            var sampleText = GetVoicePreviewText(effectiveLanguage ?? BookLanguage);
+
+            assignment.StageProposal(
+                new SpeechVoiceProfile(voiceId, assignment.Language, instruction),
+                recommendation,
+                sampleText);
+        }
+
+        VoiceDesignerStatus = SupportsVoiceDesign
+            ? $"Prepared staged VoiceDesign descriptions and sample text for {VoiceAssignments.Count} speakers. Generate each reference, preview the Base-model clone, then apply it explicitly."
+            : HasDetectedGenre
+                ? $"Prepared staged voice profiles for {VoiceAssignments.Count} speakers. Review each profile and apply it explicitly."
+                : $"Prepared staged voice profiles for {VoiceAssignments.Count} speakers using a general direction. Analyze book structure for genre-aware directions.";
+        ApplyVoiceProposalCommand.NotifyCanExecuteChanged();
+        PreviewVoiceProposalCommand.NotifyCanExecuteChanged();
+        GenerateVoiceDesignCommand.NotifyCanExecuteChanged();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanGenerateVoiceDesign), IncludeCancelCommand = true)]
+    private async Task GenerateVoiceDesignAsync(
+        VoiceAssignmentItem assignment,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        if (_ttsProvider is not IVoiceDesignProvider { SupportsVoiceDesign: true } voiceDesigner ||
+            !CanGenerateVoiceDesign(assignment))
+        {
+            return;
+        }
+
+        var language = ResolveEffectiveVoiceLanguage(assignment.ProposedVoiceId, assignment.ProposedLanguage);
+        if (language is null)
+        {
+            VoiceDesignerStatus = $"Select a supported spoken language for {assignment.SpeakerName} first.";
+            return;
+        }
+
+        IsBusy = true;
+        IsPreviewingVoice = true;
+        assignment.IsDesigningVoice = true;
+        try
+        {
+            if (_audioPlayback.IsPlaying || _audioPlayback.IsPaused)
+            {
+                _audioPlayback.Stop();
+                ResetAudioPlayback();
+            }
+
+            var sampleText = assignment.ProposedSampleText.Trim();
+            GenerationStatus = $"Generating a {language} Qwen VoiceDesign sample for {assignment.SpeakerName}…";
+            var result = await voiceDesigner.GenerateVoiceDesignAsync(
+                new VoiceDesignRequest(sampleText, language, assignment.ProposedInstruction),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            assignment.SetProposedReference(result.WavBytes, sampleText);
+
+            _audioPlayback.Play(result.WavBytes);
+            IsAudioPlaying = _audioPlayback.IsPlaying;
+            IsAudioPaused = _audioPlayback.IsPaused;
+            UpdateAudioPlaybackTime();
+            _audioPlaybackTimer.Start();
+            PlayGeneratedAudioCommand.NotifyCanExecuteChanged();
+            GenerationStatus = $"Playing the generated VoiceDesign sample for {assignment.SpeakerName}.";
+            VoiceDesignerStatus =
+                $"Generated a staged VoiceDesign reference for {assignment.SpeakerName}. Preview the Base-model clone, then apply it to save.";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            VoiceDesignerStatus = $"VoiceDesign generation for {assignment.SpeakerName} was canceled.";
+        }
+        catch (Exception exception)
+        {
+            VoiceDesignerStatus = $"Could not generate the VoiceDesign reference: {exception.Message}";
+        }
+        finally
+        {
+            assignment.IsDesigningVoice = false;
+            IsPreviewingVoice = false;
+            IsBusy = false;
+            ApplyVoiceProposalCommand.NotifyCanExecuteChanged();
+            PreviewVoiceProposalCommand.NotifyCanExecuteChanged();
+            GenerateVoiceDesignCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanApplyVoiceProposal))]
+    private async Task ApplyVoiceProposalAsync(VoiceAssignmentItem assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        if (!CanApplyVoiceProposal(assignment) || _projectId is not { } projectId)
+        {
+            return;
+        }
+
+        var proposedProfile = assignment.ProposedProfile;
+        var voiceChanged = !string.Equals(assignment.VoiceId, proposedProfile.VoiceId, StringComparison.Ordinal);
+        _voiceAssignmentUpdateDepth++;
+        try
+        {
+            assignment.VoiceId = proposedProfile.VoiceId;
+            assignment.SetSupportedLanguages(_ttsProvider.GetLanguagesForVoice(proposedProfile.VoiceId));
+            assignment.Language = proposedProfile.Language;
+            assignment.Instruction = proposedProfile.Instruction;
+            assignment.SetVoiceDesignReference(
+                proposedProfile.VoiceDesignReferenceAudio,
+                proposedProfile.VoiceDesignReferenceText);
+        }
+        finally
+        {
+            _voiceAssignmentUpdateDepth--;
+        }
+
+        assignment.MarkProposalApplied();
+        ClearGeneratedBookAudio();
+        ClearGeneratedAudioForChapterChange();
+        GenerateChapterCommand.NotifyCanExecuteChanged();
+        GenerateBookCommand.NotifyCanExecuteChanged();
+        PreviewVoiceCommand.NotifyCanExecuteChanged();
+        VoiceDesignerStatus = $"Applied the proposed profile for {assignment.SpeakerName}.";
+        await PersistVoiceAssignmentAsync(projectId, assignment, voiceChanged);
+    }
+
+    private bool CanCreateVoiceProposals() =>
+        CanEditNarrationContent &&
+        !IsAnalyzing &&
+        !IsAnalyzingStructure &&
+        VoiceAssignments.Count > 0;
+
+    private bool CanApplyVoiceProposal(VoiceAssignmentItem assignment) =>
+        assignment is not null &&
+        assignment.HasProposal &&
+        VoiceAssignments.Contains(assignment) &&
+        CanEditNarrationContent &&
+        !IsAnalyzing &&
+        !IsAnalyzingStructure &&
+        _ttsProvider.VoiceIds.Contains(assignment.ProposedVoiceId, StringComparer.Ordinal) &&
+        assignment.IsProposedProfileReady;
+
+    private bool CanGenerateVoiceDesign(VoiceAssignmentItem assignment) =>
+        assignment is not null &&
+        SupportsVoiceDesign &&
+        assignment.SupportsVoiceDesign &&
+        assignment.HasProposal &&
+        VoiceAssignments.Contains(assignment) &&
+        !IsBusy &&
+        !IsAnalyzing &&
+        !IsGenerating &&
+        !IsAnalyzingStructure &&
+        !IsPreviewingVoice &&
+        !string.IsNullOrWhiteSpace(assignment.ProposedSampleText) &&
+        assignment.ProposedSampleText.Length <= _ttsProvider.Capabilities.MaxContextCharacters &&
+        ResolveEffectiveVoiceLanguage(assignment.ProposedVoiceId, assignment.ProposedLanguage) is not null;
+
+    private bool CanPreviewVoiceProposal(VoiceAssignmentItem assignment) =>
+        assignment is not null &&
+        assignment.HasProposal &&
+        !IsBusy &&
+        !IsAnalyzing &&
+        !IsGenerating &&
+        !IsAnalyzingStructure &&
+        !IsPreviewingVoice &&
+        VoiceAssignments.Contains(assignment) &&
+        _ttsProvider.VoiceIds.Contains(assignment.ProposedVoiceId, StringComparer.Ordinal) &&
+        ResolveEffectiveVoiceLanguage(assignment.ProposedVoiceId, assignment.ProposedLanguage) is not null &&
+        assignment.IsProposedProfileReady;
+
+    private string? FindRecommendedVoice(string? effectiveLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(effectiveLanguage))
+        {
+            return null;
+        }
+
+        return _ttsProvider.VoiceIds.FirstOrDefault(voiceId =>
+        {
+            var nativeLanguage = _ttsProvider.GetVoiceNativeLanguage(voiceId);
+            return !string.IsNullOrWhiteSpace(nativeLanguage) &&
+                MatchesNativeLanguage(nativeLanguage, effectiveLanguage) &&
+                _ttsProvider.GetLanguagesForVoice(voiceId).Contains(
+                    effectiveLanguage,
+                    StringComparer.OrdinalIgnoreCase);
+        });
+    }
+
+    private string BuildVoiceRecommendationMessage(string? effectiveLanguage, string? recommendedVoice)
+    {
+        if (!string.IsNullOrWhiteSpace(recommendedVoice) && !string.IsNullOrWhiteSpace(effectiveLanguage))
+        {
+            return $"Recommended {recommendedVoice}: verified native-language metadata matches {effectiveLanguage}.";
+        }
+
+        if (_ttsProvider.VoiceIds.All(voiceId =>
+                string.IsNullOrWhiteSpace(_ttsProvider.GetVoiceNativeLanguage(voiceId))))
+        {
+            return "No voice recommendation is available because this provider supplies no verified native-language metadata. All voices remain manually selectable.";
+        }
+
+        return string.IsNullOrWhiteSpace(effectiveLanguage)
+            ? "Select a book language or per-profile language override for a native-language voice recommendation. All voices remain manually selectable."
+            : $"No voice recommendation is available for {effectiveLanguage}; no voice with matching verified native-language metadata supports that language. All voices remain manually selectable.";
+    }
+
+    private string? GetProfileEffectiveLanguage(string profileLanguage) =>
+        string.IsNullOrWhiteSpace(profileLanguage) ? BookLanguage : profileLanguage;
+
+    private static bool MatchesNativeLanguage(string nativeLanguage, string effectiveLanguage)
+    {
+        var native = nativeLanguage.Trim();
+        var effective = effectiveLanguage.Trim();
+        return string.Equals(native, effective, StringComparison.OrdinalIgnoreCase) ||
+            native.StartsWith($"{effective} (", StringComparison.OrdinalIgnoreCase) ||
+            native.StartsWith($"{effective}-", StringComparison.OrdinalIgnoreCase);
+    }
+
     [RelayCommand(CanExecute = nameof(CanSuggestVoiceInstruction))]
     private void SuggestVoiceInstruction(VoiceAssignmentItem assignment)
     {
@@ -1268,7 +1580,7 @@ public sealed partial class MainWindowViewModel
         HasDetectedGenre &&
         CanEditNarrationContent;
 
-    private static string CreateSuggestedVoiceInstruction(
+    private string CreateSuggestedVoiceInstruction(
         VoiceAssignmentItem assignment,
         string genre)
     {
@@ -1301,6 +1613,16 @@ public sealed partial class MainWindowViewModel
             _ => ("natural and engaging", "Keep a steady pace, articulate clearly, and use subtle emphasis.")
         };
         var article = "aeiou".Contains(char.ToLowerInvariant(tone[0])) ? "an" : "a";
+
+        if (SupportsVoiceDesign)
+        {
+            var audiobookContext = string.IsNullOrWhiteSpace(genre)
+                ? "an audiobook"
+                : $"a {genre.Trim()} audiobook";
+            return string.Equals(assignment.SpeakerId, "narrator", StringComparison.Ordinal)
+                ? $"Design a natural, clear audiobook narrator voice for {audiobookContext}. Give it {tone} vocal character with distinct, believable timbre. {direction} Keep it expressive but not theatrical."
+                : $"Design a distinct, believable character voice for {assignment.SpeakerName} in {audiobookContext}. Give it {tone} vocal character with a clear, natural timbre. {direction} Keep it conversational and not theatrical.";
+        }
 
         return string.Equals(assignment.SpeakerId, "narrator", StringComparison.Ordinal)
             ? $"Narrate in {article} {tone} tone. {direction} Sound natural, not theatrical."
@@ -1352,7 +1674,7 @@ public sealed partial class MainWindowViewModel
 
     private bool CanGenerateChapter() =>
         !IsBusy && !IsAnalyzing && !IsGenerating && HasAnalysis && !IsAnalysisStale &&
-        _ttsProvider.VoiceIds.Count > 0 && HasValidVoiceLanguages() &&
+        _ttsProvider.VoiceIds.Count > 0 && HasValidVoiceLanguages() && HasReadyVoiceDesigns() &&
         SelectedChapter is { Role: not SectionRole.Skip };
 
     private bool CanPreviewVoice(VoiceAssignmentItem assignment) =>
@@ -1361,7 +1683,9 @@ public sealed partial class MainWindowViewModel
         _ttsProvider.Languages.Contains(BookLanguage, StringComparer.OrdinalIgnoreCase) &&
         !IsPreviewingVoice && VoiceAssignments.Contains(assignment) &&
         _ttsProvider.VoiceIds.Contains(assignment.VoiceId, StringComparer.Ordinal) &&
-        ResolveEffectiveVoiceLanguage(assignment) is not null;
+        ResolveEffectiveVoiceLanguage(assignment) is not null &&
+        (!SupportsVoiceDesign ||
+         assignment.Profile is { VoiceDesignReferenceAudio: not null, VoiceDesignReferenceText: not null });
 
     private bool HasValidVoiceLanguages()
     {
@@ -1374,12 +1698,21 @@ public sealed partial class MainWindowViewModel
         return VoiceAssignments.All(assignment => ResolveEffectiveVoiceLanguage(assignment) is not null);
     }
 
+    private bool HasReadyVoiceDesigns() =>
+        !SupportsVoiceDesign ||
+        VoiceAssignments.All(assignment =>
+            assignment.Profile.VoiceDesignReferenceAudio is { Length: >= 44 } &&
+            !string.IsNullOrWhiteSpace(assignment.Profile.VoiceDesignReferenceText));
+
     private string? ResolveEffectiveVoiceLanguage(VoiceAssignmentItem assignment)
     {
-        var selectedLanguage = string.IsNullOrWhiteSpace(assignment.Language)
-            ? BookLanguage
-            : assignment.Language;
-        return _ttsProvider.GetLanguagesForVoice(assignment.VoiceId)
+        return ResolveEffectiveVoiceLanguage(assignment.VoiceId, assignment.Language);
+    }
+
+    private string? ResolveEffectiveVoiceLanguage(string voiceId, string profileLanguage)
+    {
+        var selectedLanguage = GetProfileEffectiveLanguage(profileLanguage);
+        return _ttsProvider.GetLanguagesForVoice(voiceId)
             .FirstOrDefault(language =>
                 string.Equals(language, selectedLanguage, StringComparison.OrdinalIgnoreCase));
     }
@@ -1560,7 +1893,7 @@ public sealed partial class MainWindowViewModel
                         $"Saved voice '{savedVoice}' for {name} is unavailable in {TtsProviderName}; using {profile.VoiceId}.";
                 }
                 else if (savedProfiles.TryGetValue(id, out var savedProfile) &&
-                         savedProfile != profile)
+                         !VoiceProfilesEqual(savedProfile, profile))
                 {
                     GenerationStatus =
                         $"Saved voice profile for {name} is unavailable in {TtsProviderName}; using a supported profile.";
@@ -1573,9 +1906,12 @@ public sealed partial class MainWindowViewModel
                     _ttsProvider.GetVoiceNativeLanguage,
                     _ttsProvider.GetLanguagesForVoice(profile.VoiceId),
                     _ttsProvider.SupportsVoiceInstructions,
-                    profile));
+                    profile,
+                    _ttsProvider.GetLanguagesForVoice,
+                    SupportsVoiceDesign));
                 VoiceAssignments[^1].PropertyChanged += OnVoiceAssignmentChanged;
-                if (!savedProfiles.TryGetValue(id, out var existingProfile) || existingProfile != profile)
+                if (!savedProfiles.TryGetValue(id, out var existingProfile) ||
+                    !VoiceProfilesEqual(existingProfile, profile))
                 {
                     await _generationStore.SaveVoiceProfileAsync(projectId, providerId, id, profile);
                     if (providerId != LocalTtsProviderService.QwenProviderId &&
@@ -1592,7 +1928,30 @@ public sealed partial class MainWindowViewModel
             GenerateChapterCommand.NotifyCanExecuteChanged();
             GenerateBookCommand.NotifyCanExecuteChanged();
             PreviewVoiceCommand.NotifyCanExecuteChanged();
+            CreateVoiceProposalsCommand.NotifyCanExecuteChanged();
+            ApplyVoiceProposalCommand.NotifyCanExecuteChanged();
+            PreviewVoiceProposalCommand.NotifyCanExecuteChanged();
+            GenerateVoiceDesignCommand.NotifyCanExecuteChanged();
         }
+    }
+
+    private static bool VoiceProfilesEqual(SpeechVoiceProfile left, SpeechVoiceProfile right)
+    {
+        if (!string.Equals(left.VoiceId, right.VoiceId, StringComparison.Ordinal) ||
+            !string.Equals(left.Language, right.Language, StringComparison.Ordinal) ||
+            !string.Equals(left.Instruction, right.Instruction, StringComparison.Ordinal) ||
+            !string.Equals(
+                left.VoiceDesignReferenceText,
+                right.VoiceDesignReferenceText,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return left.VoiceDesignReferenceAudio is null
+            ? right.VoiceDesignReferenceAudio is null
+            : right.VoiceDesignReferenceAudio is not null &&
+              left.VoiceDesignReferenceAudio.AsSpan().SequenceEqual(right.VoiceDesignReferenceAudio);
     }
 
     private async Task RefreshVoiceAssignmentsSafelyAsync(Guid projectId, ChapterAnalysis? analysis)
@@ -1609,11 +1968,43 @@ public sealed partial class MainWindowViewModel
 
     private void OnVoiceAssignmentChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
+        if (sender is not VoiceAssignmentItem assignment)
+        {
+            return;
+        }
+
+        if (e.PropertyName == nameof(VoiceAssignmentItem.Profile))
+        {
+            GenerateChapterCommand.NotifyCanExecuteChanged();
+            GenerateBookCommand.NotifyCanExecuteChanged();
+            PreviewVoiceCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
+        if (e.PropertyName is nameof(VoiceAssignmentItem.HasProposal) or
+            nameof(VoiceAssignmentItem.ProposedVoiceId) or
+            nameof(VoiceAssignmentItem.ProposedLanguage) or
+            nameof(VoiceAssignmentItem.ProposedInstruction) or
+            nameof(VoiceAssignmentItem.ProposedSampleText) or
+            nameof(VoiceAssignmentItem.ProposedReferenceAudio) or
+            nameof(VoiceAssignmentItem.ProposedReferenceText))
+        {
+            if (e.PropertyName == nameof(VoiceAssignmentItem.ProposedLanguage) && assignment.SupportsVoiceDesign)
+            {
+                var language = GetProfileEffectiveLanguage(assignment.ProposedLanguage);
+                assignment.ProposedSampleText = GetVoicePreviewText(language ?? BookLanguage);
+            }
+
+            ApplyVoiceProposalCommand.NotifyCanExecuteChanged();
+            PreviewVoiceProposalCommand.NotifyCanExecuteChanged();
+            GenerateVoiceDesignCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
         if (_voiceAssignmentUpdateDepth > 0 || IsBusy || IsGenerating ||
             e.PropertyName is not (nameof(VoiceAssignmentItem.VoiceId) or
                 nameof(VoiceAssignmentItem.Language) or
                 nameof(VoiceAssignmentItem.Instruction)) ||
-            sender is not VoiceAssignmentItem assignment ||
             _projectId is not { } projectId)
         {
             return;
@@ -1646,6 +2037,7 @@ public sealed partial class MainWindowViewModel
         bool persistLegacyVoice = false)
     {
         var providerId = CurrentTtsProviderId;
+        var applyingProposal = assignment.IsProposalApplied;
         try
         {
             var profile = assignment.Profile;
@@ -1663,11 +2055,19 @@ public sealed partial class MainWindowViewModel
             {
                 await RefreshChapterQueueAsync();
                 GenerationStatus = $"Saved the voice profile for {assignment.SpeakerName}.";
+                if (applyingProposal)
+                {
+                    VoiceDesignerStatus = $"Applied and saved the profile for {assignment.SpeakerName}.";
+                }
             }
         }
         catch (Exception exception)
         {
             GenerationStatus = $"Could not save the voice profile: {exception.Message}";
+            if (applyingProposal)
+            {
+                VoiceDesignerStatus = $"Could not save the applied profile for {assignment.SpeakerName}: {exception.Message}";
+            }
         }
     }
 

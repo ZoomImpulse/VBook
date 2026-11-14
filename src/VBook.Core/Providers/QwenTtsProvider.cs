@@ -4,35 +4,24 @@ namespace VBook.Core.Providers;
 
 public interface IQwenTtsProcessRunner : IDisposable
 {
+    Task<byte[]> GenerateVoiceDesignAsync(
+        VoiceDesignRequest request,
+        CancellationToken cancellationToken);
+
     Task<byte[]> SynthesizeAsync(SpeechRequest request, CancellationToken cancellationToken);
 }
 
-public sealed class QwenTtsProvider : ITtsProvider, IDisposable
+public sealed class QwenTtsProvider : ITtsProvider, IVoiceDesignProvider, IDisposable
 {
-    private static readonly string[] SupportedVoices =
-    [
-        "Aiden", "Dylan", "Eric", "Ono_Anna", "Ryan", "Serena", "Sohee", "Uncle_Fu", "Vivian"
-    ];
+    public const string DesignedVoiceId = "Designed";
+
+    private static readonly string[] SupportedVoices = [DesignedVoiceId];
 
     private static readonly string[] SupportedLanguages =
     [
         "Chinese", "English", "French", "German", "Italian", "Japanese",
         "Korean", "Portuguese", "Russian", "Spanish"
     ];
-
-    private static readonly IReadOnlyDictionary<string, string> VoiceNativeLanguages =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Aiden"] = "English",
-            ["Dylan"] = "Chinese (Beijing dialect)",
-            ["Eric"] = "Chinese (Sichuan dialect)",
-            ["Ono_Anna"] = "Japanese",
-            ["Ryan"] = "English",
-            ["Serena"] = "Chinese",
-            ["Sohee"] = "Korean",
-            ["Uncle_Fu"] = "Chinese",
-            ["Vivian"] = "Chinese"
-        };
 
     private readonly IQwenTtsProcessRunner _runner;
 
@@ -45,54 +34,98 @@ public sealed class QwenTtsProvider : ITtsProvider, IDisposable
 
     public IReadOnlyList<string> Languages { get; } = SupportedLanguages;
 
-    public string? GetVoiceNativeLanguage(string voiceId) =>
-        VoiceNativeLanguages.GetValueOrDefault(voiceId);
+    public string? GetVoiceNativeLanguage(string voiceId) => null;
 
     public bool SupportsVoiceInstructions => true;
 
+    public bool SupportsVoiceDesign => true;
+
     public ProviderCapabilities Capabilities { get; } =
-        new("Qwen3-TTS 1.7B CustomVoice (local CUDA)", IsMock: false, MaxContextCharacters: 700);
+        new("Qwen3-TTS VoiceDesign + Base 1.7B (local CUDA)", IsMock: false, MaxContextCharacters: 700);
+
+    public async Task<SpeechResult> GenerateVoiceDesignAsync(
+        VoiceDesignRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ValidateText(request.Text);
+        ValidateLanguage(request.Language);
+        ValidateInstruction(request.Instruction);
+
+        var language = GetSupportedLanguage(request.Language);
+        var wavBytes = await _runner.GenerateVoiceDesignAsync(
+            request with { Language = language },
+            cancellationToken);
+        return CreateSpeechResult(wavBytes);
+    }
 
     public async Task<SpeechResult> SynthesizeAsync(
         SpeechRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.Text);
+        ValidateText(request.Text);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.VoiceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.Language);
+        ValidateLanguage(request.Language);
         ArgumentNullException.ThrowIfNull(request.Instruction);
-        if (request.Text.Length > Capabilities.MaxContextCharacters)
-        {
-            throw new ArgumentException("The text exceeds Qwen3-TTS's request limit.", nameof(request));
-        }
+        ValidateInstruction(request.Instruction);
 
         if (!VoiceIds.Contains(request.VoiceId, StringComparer.OrdinalIgnoreCase))
         {
             throw new ArgumentException($"Qwen3-TTS voice '{request.VoiceId}' is not available.", nameof(request));
         }
 
-        if (!Languages.Contains(request.Language, StringComparer.OrdinalIgnoreCase))
+        if (request.VoiceDesignReferenceAudio is not { Length: >= 44 } ||
+            string.IsNullOrWhiteSpace(request.VoiceDesignReferenceText))
         {
-            throw new ArgumentException(
-                $"Qwen3-TTS language '{request.Language}' is not available.",
-                nameof(request));
+            throw new InvalidOperationException(
+                "Generate and apply a Qwen VoiceDesign reference before synthesizing this speaker.");
         }
 
-        if (request.Instruction.Length > 500)
+        var canonicalRequest = request with
         {
-            throw new ArgumentException("A Qwen voice instruction cannot exceed 500 characters.", nameof(request));
-        }
+            VoiceId = DesignedVoiceId,
+            Language = GetSupportedLanguage(request.Language)
+        };
+        var wavBytes = await _runner.SynthesizeAsync(canonicalRequest, cancellationToken);
+        return CreateSpeechResult(wavBytes);
+    }
 
-        var wavBytes = await _runner.SynthesizeAsync(
-            request with
-            {
-                VoiceId = VoiceIds.First(voice =>
-                    string.Equals(voice, request.VoiceId, StringComparison.OrdinalIgnoreCase)),
-                Language = Languages.First(language =>
-                    string.Equals(language, request.Language, StringComparison.OrdinalIgnoreCase))
-            },
-            cancellationToken);
+    public void Dispose() => _runner.Dispose();
+
+    private void ValidateText(string text)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        if (text.Length > Capabilities.MaxContextCharacters)
+        {
+            throw new ArgumentException("The text exceeds Qwen3-TTS's request limit.", nameof(text));
+        }
+    }
+
+    private static void ValidateLanguage(string language)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(language);
+        if (!SupportedLanguages.Contains(language, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Qwen3-TTS language '{language}' is not available.", nameof(language));
+        }
+    }
+
+    private static void ValidateInstruction(string instruction)
+    {
+        ArgumentNullException.ThrowIfNull(instruction);
+        if (instruction.Length > 500)
+        {
+            throw new ArgumentException("A Qwen voice description cannot exceed 500 characters.", nameof(instruction));
+        }
+    }
+
+    private static string GetSupportedLanguage(string language) =>
+        SupportedLanguages.First(supported =>
+            string.Equals(supported, language, StringComparison.OrdinalIgnoreCase));
+
+    private static SpeechResult CreateSpeechResult(byte[] wavBytes)
+    {
         var audio = WavPcm.ReadPcmAudio(wavBytes);
         var duration = audio.Data.Length / (double)(audio.SampleRate * audio.BlockAlign);
         if (duration <= 0)
@@ -102,6 +135,4 @@ public sealed class QwenTtsProvider : ITtsProvider, IDisposable
 
         return new SpeechResult(wavBytes, TimeSpan.FromSeconds(duration));
     }
-
-    public void Dispose() => _runner.Dispose();
 }

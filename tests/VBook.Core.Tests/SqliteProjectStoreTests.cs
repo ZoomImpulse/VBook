@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using VBook.Core.Books;
+using VBook.Core.Generation;
 using VBook.Core.Projects;
 using VBook.Core.Providers;
 using Xunit;
@@ -21,18 +22,104 @@ public sealed class SqliteProjectStoreTests
                 [new ImportedChapter("c1", "Chapter", "Text.")]);
             await store.SaveAsync(project);
             await store.SaveVoiceAssignmentAsync(project.Id, "narrator", "af_heart");
-            var qwen = new SpeechVoiceProfile("Ryan", "English", "Speak calmly.");
+            var referenceAudio = WavPcm.CreateSilence(TimeSpan.FromMilliseconds(250));
+            const string referenceText = "This is the designed voice sample.";
+            var qwen = new SpeechVoiceProfile(
+                QwenTtsProvider.DesignedVoiceId,
+                "English",
+                "A warm audiobook narrator voice.",
+                referenceAudio,
+                referenceText);
             await store.SaveVoiceProfileAsync(project.Id, "Qwen3-TTS", "narrator", qwen);
             await store.SaveVoiceProfileAsync(project.Id, "Kokoro", "narrator", new("af_heart", "", ""));
 
             var reopened = new SqliteProjectStore(databasePath);
             await reopened.InitializeAsync();
-            Assert.Equal(qwen, (await reopened.LoadVoiceProfilesAsync(project.Id, "Qwen3-TTS"))["narrator"]);
+            var loadedQwen = (await reopened.LoadVoiceProfilesAsync(project.Id, "Qwen3-TTS"))["narrator"];
+            Assert.Equal(qwen.VoiceId, loadedQwen.VoiceId);
+            Assert.Equal(qwen.Language, loadedQwen.Language);
+            Assert.Equal(qwen.Instruction, loadedQwen.Instruction);
+            Assert.Equal(referenceText, loadedQwen.VoiceDesignReferenceText);
+            Assert.Equal(
+                Convert.ToBase64String(referenceAudio),
+                Convert.ToBase64String(loadedQwen.VoiceDesignReferenceAudio!));
             Assert.Equal("af_heart", (await reopened.LoadVoiceProfilesAsync(project.Id, "Kokoro"))["narrator"].VoiceId);
             Assert.Equal("af_heart", (await reopened.LoadVoiceAssignmentsAsync(project.Id))["narrator"]);
             Assert.Empty(await reopened.LoadVoiceProfilesAsync(project.Id, "Piper"));
             await reopened.DeleteAsync(project.Id);
             Assert.Empty(await reopened.LoadVoiceProfilesAsync(project.Id, "Qwen3-TTS"));
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Initialize_MigratesLegacyVoiceProfilesForDesignedReferences()
+    {
+        var databasePath = CreateDatabasePath();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+            var projectId = Guid.NewGuid();
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    CREATE TABLE Projects (
+                        Id TEXT NOT NULL PRIMARY KEY,
+                        Title TEXT NOT NULL,
+                        SourcePath TEXT NOT NULL,
+                        CreatedAt TEXT NOT NULL,
+                        UpdatedAt TEXT NOT NULL
+                    );
+                    CREATE TABLE VoiceProfiles (
+                        ProjectId TEXT NOT NULL,
+                        ProviderId TEXT NOT NULL,
+                        SpeakerId TEXT NOT NULL,
+                        VoiceId TEXT NOT NULL,
+                        Language TEXT NOT NULL,
+                        Instruction TEXT NOT NULL,
+                        PRIMARY KEY (ProjectId, ProviderId, SpeakerId)
+                    );
+                    INSERT INTO Projects (Id, Title, SourcePath, CreatedAt, UpdatedAt)
+                    VALUES ($project, 'Legacy', 'legacy.epub', $time, $time);
+                    INSERT INTO VoiceProfiles
+                        (ProjectId, ProviderId, SpeakerId, VoiceId, Language, Instruction)
+                    VALUES ($project, 'Qwen3-TTS', 'narrator', 'Ryan', 'English', 'Speak calmly.');
+                    """;
+                command.Parameters.AddWithValue("$project", projectId.ToString("D"));
+                command.Parameters.AddWithValue("$time", DateTimeOffset.UtcNow.ToString("O"));
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var store = new SqliteProjectStore(databasePath);
+            await store.InitializeAsync();
+            var legacy = (await store.LoadVoiceProfilesAsync(projectId, "Qwen3-TTS"))["narrator"];
+            Assert.Equal("Ryan", legacy.VoiceId);
+            Assert.Null(legacy.VoiceDesignReferenceAudio);
+            Assert.Null(legacy.VoiceDesignReferenceText);
+
+            var referenceAudio = WavPcm.CreateSilence(TimeSpan.FromMilliseconds(250));
+            await store.SaveVoiceProfileAsync(
+                projectId,
+                "Qwen3-TTS",
+                "narrator",
+                new SpeechVoiceProfile(
+                    QwenTtsProvider.DesignedVoiceId,
+                    "English",
+                    "A designed voice.",
+                    referenceAudio,
+                    "A short voice sample."));
+
+            var saved = (await store.LoadVoiceProfilesAsync(projectId, "Qwen3-TTS"))["narrator"];
+            Assert.Equal(
+                Convert.ToBase64String(referenceAudio),
+                Convert.ToBase64String(saved.VoiceDesignReferenceAudio!));
+            Assert.Equal("A short voice sample.", saved.VoiceDesignReferenceText);
         }
         finally
         {
